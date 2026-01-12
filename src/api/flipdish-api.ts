@@ -14,6 +14,7 @@ import {
     OrderResult,
     OTPResponse,
     AuthResponse,
+    CustomerContext,
     FlipdishApiResponse,
     PhoneAgentApiResponse,
 } from './flipdish-types';
@@ -202,9 +203,9 @@ class FlipdishAPI {
         };
     }
 
-    async verifyOTP(phoneNumber: string, otpCode: string): Promise<AuthResponse> {
+    async verifyOTP(phoneNumber: string, otpCode: string, chatId?: string): Promise<AuthResponse> {
         if (this.config.serverUrl) {
-            return this.callProxy('verifyOTP', [phoneNumber, otpCode, this.config.appId]);
+            return this.callProxy('verifyOTP', [phoneNumber, otpCode, chatId, this.config.appId]);
         }
 
         const cleanedPhone = phoneNumber.replace(/[\s-]/g, '');
@@ -247,12 +248,22 @@ class FlipdishAPI {
 
         console.log('✅ OTP verified successfully');
 
+        let context: CustomerContext | undefined;
+        if (chatId) {
+            try {
+                context = await this.getCustomerContext(chatId, token);
+            } catch (error) {
+                console.warn('⚠️ Failed to load customer context:', error);
+            }
+        }
+
         return {
             success: true,
             token,
             user: {
                 phoneNumber: cleanedPhone,
             },
+            context,
         };
     }
 
@@ -260,13 +271,14 @@ class FlipdishAPI {
     // SESSION METHODS
     // ----------------------------------------
 
-    async createSession(token?: string): Promise<{ chatId: string }> {
+    async createSession(token?: string, chatId?: string): Promise<{ chatId: string; basket?: BasketSummary }> {
         if (this.config.serverUrl) {
             return this.callProxy('createSession', [
                 this.config.appId,
                 this.config.storeId,
                 token,
-                this.config.bearerToken
+                this.config.bearerToken,
+                chatId
             ]);
         }
 
@@ -357,6 +369,51 @@ class FlipdishAPI {
         console.log(`   ${status.isOpen ? '✓ OPEN' : '⚠️  CLOSED'}: ${status.openTimeMessage}`);
 
         return status;
+    }
+
+    // ----------------------------------------
+    // CUSTOMER METHODS
+    // ----------------------------------------
+
+    async getCustomerContext(chatId: string, token: string): Promise<CustomerContext> {
+        if (this.config.serverUrl) {
+            return this.callProxy('getCustomerContext', [chatId, token]);
+        }
+
+        console.log('👤 Getting customer context for chat:', chatId);
+
+        const response = await fetch(
+            `${this.config.phoneAgentBase}/tools/get-customer-context`,
+            {
+                method: 'GET',
+                headers: this.buildPhoneAgentHeaders(chatId, token),
+            }
+        );
+
+        const data: PhoneAgentApiResponse<{
+            brandId?: string;
+            customer?: {
+                customerId?: number;
+                customerPhoneNumber?: string;
+                email?: string;
+                name?: string;
+            };
+        }> = await response.json();
+
+        if (!response.ok) {
+            throw new FlipdishApiError(
+                data.serverErrorMessage || 'Failed to get customer context',
+                response.status
+            );
+        }
+
+        const customer = data.data?.customer;
+        return {
+            id: customer?.customerId ? String(customer.customerId) : undefined,
+            phoneNumber: customer?.customerPhoneNumber,
+            email: customer?.email,
+            name: customer?.name,
+        };
     }
 
     // ----------------------------------------
@@ -632,7 +689,19 @@ class FlipdishAPI {
         }
 
         console.log(`🔍 Found ${data.data?.items?.length || 0} items`);
-        return data.data?.items || [];
+
+        // Map raw API response to internal MenuItem type
+        // The API likely returns PascalCase fields which need to be mapped to camelCase
+        return (data.data?.items || []).map((item: any) => ({
+            menuItemId: item.menuItemId || item.MenuItemId,
+            name: item.name || item.Name,
+            description: item.description || item.Description,
+            menuSectionName: item.menuSectionName || item.MenuSectionName,
+            price: item.price || item.Price,
+            // Map possible image fields
+            imageUrl: item.imageUrl || item.ImageUrl || item.ImageName,
+            menuItemOptions: item.menuItemOptions || item.MenuItemOptions,
+        }));
     }
 
     // ----------------------------------------

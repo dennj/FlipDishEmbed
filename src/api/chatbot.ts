@@ -202,13 +202,16 @@ CRITICAL RULES:
         console.log('🤖 CHATBOT REQUEST');
         console.log('='.repeat(60));
 
+        const basketContext = await this.buildBasketContextMessage(chatId, token);
+        const modelMessages = this.insertContextMessage(messages, basketContext);
+
         // Track search results for validation
         let searchResults: MenuItem[] = this.extractSearchResultsFromHistory(messages);
 
         // Initial OpenAI call
         const response = await this.openai.chat.completions.create({
             model: 'gpt-4o',
-            messages: messages as any,
+            messages: modelMessages as any,
             tools,
             tool_choice: 'auto',
         });
@@ -306,12 +309,19 @@ CRITICAL RULES:
         }
 
         // Get final response
+        const refreshedBasketContext = await this.buildBasketContextMessage(chatId, token);
+        const modelFunctionMessages = this.insertContextMessage(functionMessages, refreshedBasketContext);
+
         const finalResponse = await this.openai.chat.completions.create({
             model: 'gpt-4o',
-            messages: functionMessages as any,
+            messages: modelFunctionMessages as any,
         });
 
         const finalMessage = finalResponse.choices[0].message;
+        const orderConfirmation = this.buildOrderConfirmation(functionMessages);
+        if ((!finalMessage.content || !finalMessage.content.trim()) && orderConfirmation) {
+            finalMessage.content = orderConfirmation;
+        }
 
         // Check for auth requirements
         const { authRequired, tokenExpired } = this.checkAuthStatus(functionMessages);
@@ -420,6 +430,11 @@ CRITICAL RULES:
 
                 const result = await flipdishApi.submitOrder(chatId, token);
                 if (result.success) {
+                    try {
+                        await flipdishApi.clearBasket(chatId, token);
+                    } catch (error) {
+                        console.warn('⚠️ Failed to clear basket after submit:', error);
+                    }
                     return {
                         status: 200,
                         data: {
@@ -484,6 +499,77 @@ CRITICAL RULES:
             }
         }
         return [];
+    }
+
+    private insertContextMessage(messages: ChatMessage[], context?: ChatMessage | null): ChatMessage[] {
+        if (!context) {
+            return messages;
+        }
+
+        if (messages.length === 0) {
+            return [context];
+        }
+
+        if (messages[0].role === 'system') {
+            return [messages[0], context, ...messages.slice(1)];
+        }
+
+        return [context, ...messages];
+    }
+
+    private async buildBasketContextMessage(chatId: string, token?: string): Promise<ChatMessage | null> {
+        try {
+            const basket = await flipdishApi.getBasket(chatId, token);
+            const items = basket.basketMenuItems || [];
+            const total = basket.totalPrice ?? 0;
+
+            const lines = items.map(item => {
+                const itemTotal = item.totalPrice ?? item.unitPrice ?? 0;
+                return `- ${item.quantity} x ${item.name} (${itemTotal.toFixed(2)} EUR)`;
+            });
+
+            const summary = lines.length > 0
+                ? `${lines.join('\n')}\nTotal: ${total.toFixed(2)} EUR`
+                : 'Basket is empty.';
+
+            return {
+                role: 'system',
+                content: `Basket context (read-only):\n${summary}`,
+            };
+        } catch (error) {
+            console.warn('⚠️ Failed to load basket context:', error);
+            return null;
+        }
+    }
+
+    private buildOrderConfirmation(messages: ChatMessage[]): string | null {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const msg = messages[i];
+            if (msg.role !== 'tool' || !msg.content) continue;
+
+            try {
+                const parsed = JSON.parse(msg.content);
+                const prompt = parsed?.data?.leadTimePrompt;
+                if (prompt) {
+                    return this.normalizeLeadTimePrompt(prompt);
+                }
+
+                const orderId = parsed?.data?.order?.orderId;
+                if (orderId) {
+                    return `Thanks! Your order has been placed.\nOrder ID: ${orderId}`;
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private normalizeLeadTimePrompt(prompt: string): string {
+        const trimmed = prompt.replace(/^Tell the user:\s*/i, '').trim();
+        const unquoted = trimmed.replace(/^"+|"+$/g, '');
+        return unquoted || 'Thanks! Your order has been placed.';
     }
 
     /**

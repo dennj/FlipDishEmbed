@@ -74,18 +74,20 @@ export interface MenuItem {
     menuSectionName: string;
     price: number;
     imageUrl?: string;
-    menuItemOptionSets?: MenuOptionSet[];
+    menuItemOptions?: MenuItemOptionSet;
 }
 
-export interface MenuOptionSet {
+export interface MenuItemOptionSet {
     menuItemOptionSetId: number;
-    name: string;
-    minSelectCount: number;
-    maxSelectCount: number;
-    menuItemOptionSetItems: MenuOption[];
+    name?: string;
+    optionsRules?: string;
+    minSelectCount?: number;
+    maxSelectCount?: number;
+    options: MenuItemOption[];
+    afterChoosingThis?: MenuItemOptionSet;
 }
 
-export interface MenuOption {
+export interface MenuItemOption {
     menuItemOptionSetItemId: number;
     name: string;
     price: number;
@@ -156,6 +158,7 @@ export interface AuthResponse {
     user?: {
         phoneNumber: string;
     };
+    context?: CustomerContext;
     error?: string;
 }
 

@@ -2,13 +2,21 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useFlipDish } from '../context/FlipDishProvider';
-import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User } from 'lucide-react';
+import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User, CreditCard, Check } from 'lucide-react';
 import { cn } from '../utils/cn';
 
+import {
+    Card,
+    CardHeader,
+    CardTitle,
+    CardDescription,
+    CardContent,
+    CardFooter,
+} from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { MenuItemCarousel } from './MenuItemCard';
 
 // ============================================
 // AUTH MODAL
@@ -17,9 +25,10 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 interface AuthModalProps {
     isOpen: boolean;
     onClose: () => void;
+    onSuccess?: () => void;
 }
 
-function AuthModal({ isOpen, onClose }: AuthModalProps) {
+function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     const { initiateOTP, verifyOTP } = useFlipDish();
     const [phone, setPhone] = useState('');
     const [code, setCode] = useState('');
@@ -47,6 +56,7 @@ function AuthModal({ isOpen, onClose }: AuthModalProps) {
         const result = await verifyOTP(phone, code);
         setLoading(false);
         if (result.success) {
+            if (onSuccess) onSuccess();
             onClose();
         } else {
             setError(result.error || 'Invalid code');
@@ -124,10 +134,47 @@ function AuthModal({ isOpen, onClose }: AuthModalProps) {
 interface BasketPanelProps {
     isOpen: boolean;
     onClose: () => void;
+    onSignInNeeded: () => void;
 }
 
-function BasketPanel({ isOpen, onClose }: BasketPanelProps) {
-    const { basketItems, basketTotal, isAuthenticated, defaultPaymentAccount } = useFlipDish();
+function BasketPanel({ isOpen, onClose, onSignInNeeded }: BasketPanelProps) {
+    const { basketItems, basketTotal, isAuthenticated, defaultPaymentAccount, placeOrder, addMessage } = useFlipDish();
+    const [isPlacingOrder, setIsPlacingOrder] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+
+    const buildConfirmationMessage = (leadTimePrompt?: string, orderId?: string) => {
+        let message = 'Thanks! Your order has been placed.';
+        if (leadTimePrompt) {
+            const trimmed = leadTimePrompt.replace(/^Tell the user:\s*/i, '').trim();
+            message = trimmed.replace(/^"+|"+$/g, '') || message;
+        }
+        if (orderId) {
+            message += `\nOrder ID: ${orderId}`;
+        }
+        return message;
+    };
+
+    const handleCheckout = async () => {
+        setError(null);
+        if (!isAuthenticated) {
+            onClose();
+            onSignInNeeded();
+            return;
+        }
+        setIsPlacingOrder(true);
+        console.log('🛒 Placing order...');
+        const result = await placeOrder(defaultPaymentAccount?.PaymentAccountId);
+        setIsPlacingOrder(false);
+        if (result.success) {
+            addMessage({
+                role: 'assistant',
+                content: buildConfirmationMessage(result.leadTimePrompt, result.orderId),
+            });
+            onClose();
+        } else {
+            setError(result.error || 'Failed to place order');
+        }
+    };
 
     if (!isOpen) return null;
 
@@ -177,11 +224,95 @@ function BasketPanel({ isOpen, onClose }: BasketPanelProps) {
                             </p>
                         )}
 
-                        <Button className="w-full" onClick={onClose}>
-                            Continue Shopping
+                        {error && (
+                            <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md">
+                                <p className="text-xs text-destructive font-medium">{error}</p>
+                            </div>
+                        )}
+
+                        <Button className="w-full" onClick={handleCheckout} disabled={isPlacingOrder}>
+                            {isPlacingOrder ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                                    Processing...
+                                </>
+                            ) : (
+                                isAuthenticated ? "Buy Now" : "Log in to Checkout"
+                            )}
                         </Button>
                     </div>
                 )}
+            </Card>
+        </div>
+    );
+}
+
+// ============================================
+// PAYMENT METHOD PANEL
+// ============================================
+
+interface PaymentMethodPanelProps {
+    isOpen: boolean;
+    onClose: () => void;
+}
+
+function PaymentMethodPanel({ isOpen, onClose }: PaymentMethodPanelProps) {
+    const { paymentAccounts, defaultPaymentAccount, setPaymentMethod, logout } = useFlipDish();
+
+    const handleLogout = () => {
+        logout();
+        onClose();
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <Card className="w-full max-w-sm shadow-lg animate-in fade-in zoom-in-95 duration-200">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-xl">Payment Methods</CardTitle>
+                    <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8 p-0">
+                        <X className="h-4 w-4" />
+                    </Button>
+                </CardHeader>
+                <CardContent className="pt-4 space-y-4">
+                    <div className="space-y-2">
+                        {paymentAccounts.length === 0 ? (
+                            <p className="text-sm text-muted-foreground text-center py-4">No payment methods found</p>
+                        ) : (
+                            paymentAccounts.map((account) => {
+                                const isSelected = defaultPaymentAccount?.PaymentAccountId === account.PaymentAccountId;
+                                return (
+                                    <div
+                                        key={account.PaymentAccountId}
+                                        className={cn(
+                                            "flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors",
+                                            isSelected ? "bg-primary/5 border-primary" : "hover:bg-muted"
+                                        )}
+                                        onClick={() => setPaymentMethod(account.PaymentAccountId)}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="bg-muted p-2 rounded-full">
+                                                <CreditCard className="w-4 h-4 text-muted-foreground" />
+                                            </div>
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-medium">{account.Description}</span>
+                                            </div>
+                                        </div>
+                                        {isSelected && (
+                                            <Check className="w-4 h-4 text-primary" />
+                                        )}
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+
+                    <Button variant="destructive" className="w-full" onClick={handleLogout}>
+                        <LogOut className="w-4 h-4 mr-2" />
+                        Log Out
+                    </Button>
+                </CardContent>
             </Card>
         </div>
     );
@@ -208,6 +339,8 @@ export function FlipDishChat() {
     const [input, setInput] = useState('');
     const [showAuth, setShowAuth] = useState(false);
     const [showBasket, setShowBasket] = useState(false);
+    const [showProfile, setShowProfile] = useState(false);
+    const [returnToBasket, setReturnToBasket] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll
@@ -224,8 +357,71 @@ export function FlipDishChat() {
         await sendMessage(message);
     };
 
-    // Filter visible messages
-    const visibleMessages = messages.filter(m => m.role !== 'system' && m.role !== 'tool');
+    const renderMessageContent = (msg: any) => {
+        // Handle User Messages
+        if (msg.role === 'user') {
+            return (
+                <div className="flex flex-col gap-1 items-end">
+                    <div className="bg-primary text-primary-foreground rounded-2xl rounded-br-sm px-5 py-3 text-sm shadow-sm">
+                        <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                    </div>
+                </div>
+            );
+        }
+
+        // Handle Tool Messages (Rich Content)
+        if (msg.role === 'tool') {
+            try {
+                const content = JSON.parse(msg.content);
+                if (content.displayType === 'menu_cards' && content.items?.length > 0) {
+                    return (
+                        <div className="w-full pl-11 mb-2">
+                            <MenuItemCarousel items={content.items} />
+                        </div>
+                    );
+                }
+            } catch (e) {
+                // Ignore invalid JSON or non-displayable tools
+                return null;
+            }
+            return null;
+        }
+
+        // Handle Assistant Messages (Text)
+        if (msg.role === 'assistant') {
+            if (!msg.content) return null; // Skip empty assistant messages (e.g. only tool calls)
+            return (
+                <div className="flex gap-3 max-w-[85%] animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <Avatar className="h-8 w-8 mt-1 border shadow-sm bg-card">
+                        <AvatarImage src="/placeholder-logo.png" />
+                        <AvatarFallback className="bg-background text-[10px] font-bold text-muted-foreground">AI</AvatarFallback>
+                    </Avatar>
+
+                    <div className="flex flex-col gap-1">
+                        <div className="bg-card text-card-foreground border rounded-2xl rounded-bl-sm px-5 py-3 text-sm shadow-sm">
+                            <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        return null;
+    };
+
+    // Filter messages to show (User, Assistant, and Tools with displayable content)
+    const visibleMessages = messages.filter(m => {
+        if (m.role === 'system') return false;
+        if (m.role === 'tool') {
+            try {
+                const content = JSON.parse(m.content);
+                return content.displayType === 'menu_cards';
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    });
 
     if (!isInitialized) {
         return (
@@ -249,7 +445,7 @@ export function FlipDishChat() {
                     </Avatar>
                     <div className="flex flex-col gap-0.5">
                         <CardTitle className="text-base font-semibold leading-none">
-                            {restaurantStatus?.restaurantName || 'FlipDish Assistant'}
+                            FlipDish
                         </CardTitle>
                         <div className="flex items-center gap-1.5">
                             <span className={cn(
@@ -287,11 +483,11 @@ export function FlipDishChat() {
                         <Button
                             variant="ghost"
                             size="icon"
-                            onClick={logout}
-                            title="Sign out"
+                            onClick={() => setShowProfile(true)}
+                            title="Profile & Payment"
                             className="h-9 w-9 rounded-full"
                         >
-                            <LogOut className="h-4 w-4 text-muted-foreground" />
+                            <User className="h-4 w-4 text-muted-foreground" />
                         </Button>
                     ) : (
                         <Button
@@ -334,37 +530,9 @@ export function FlipDishChat() {
                 )}
 
                 {visibleMessages.map((msg, idx) => (
-                    <div
-                        key={idx}
-                        className={cn(
-                            "flex gap-3 max-w-[85%] animate-in fade-in slide-in-from-bottom-2 duration-300",
-                            msg.role === 'user' ? "ml-auto flex-row-reverse" : ""
-                        )}
-                    >
-                        <Avatar className={cn(
-                            "h-8 w-8 mt-1 border shadow-sm",
-                            msg.role === 'user' ? "bg-primary text-primary-foreground hidden" : "bg-card"
-                        )}>
-                            {msg.role === 'user' ? (
-                                <AvatarFallback className="bg-primary text-primary-foreground"><User className="h-4 w-4" /></AvatarFallback>
-                            ) : (
-                                <AvatarImage src="/placeholder-logo.png" />
-                            )}
-                            <AvatarFallback className="bg-background text-[10px] font-bold text-muted-foreground">AI</AvatarFallback>
-                        </Avatar>
-
-                        <div className="flex flex-col gap-1">
-                            <div className={cn(
-                                "rounded-2xl px-5 py-3 text-sm shadow-sm",
-                                msg.role === 'user'
-                                    ? "bg-primary text-primary-foreground rounded-br-sm"
-                                    : "bg-card text-card-foreground border rounded-bl-sm"
-                            )}>
-                                <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                            </div>
-                            {/* Timestamp or status could go here */}
-                        </div>
-                    </div>
+                    <React.Fragment key={idx}>
+                        {renderMessageContent(msg)}
+                    </React.Fragment>
                 ))}
 
                 {isLoading && (
@@ -414,8 +582,30 @@ export function FlipDishChat() {
                 </form>
             </CardFooter>
 
-            <AuthModal isOpen={showAuth} onClose={() => setShowAuth(false)} />
-            <BasketPanel isOpen={showBasket} onClose={() => setShowBasket(false)} />
-        </Card>
+            <AuthModal
+                isOpen={showAuth}
+                onClose={() => setShowAuth(false)}
+                onSuccess={() => {
+                    if (returnToBasket) {
+                        setShowBasket(true);
+                        setReturnToBasket(false);
+                    }
+                }}
+            />
+
+            <BasketPanel
+                isOpen={showBasket}
+                onClose={() => setShowBasket(false)}
+                onSignInNeeded={() => {
+                    setReturnToBasket(true);
+                    setShowAuth(true);
+                }}
+            />
+
+            <PaymentMethodPanel
+                isOpen={showProfile}
+                onClose={() => setShowProfile(false)}
+            />
+        </Card >
     );
 }
