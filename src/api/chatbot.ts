@@ -7,7 +7,7 @@
 
 import OpenAI from 'openai';
 import flipdishApi, { FlipdishApiError } from './flipdish-api';
-import type { MenuItem } from './flipdish-types';
+import type { BasketSummary, MenuItem } from './flipdish-types';
 
 // ============================================
 // TYPES
@@ -103,18 +103,6 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
-            name: 'get_basket_summary',
-            description: 'Gets the current basket summary with all items and total.',
-            parameters: {
-                type: 'object',
-                properties: {},
-                required: [],
-            },
-        },
-    },
-    {
-        type: 'function',
-        function: {
             name: 'remove_from_basket',
             description: 'Removes items from the basket.',
             parameters: {
@@ -184,7 +172,6 @@ Tools available:
 - show_items: Display interactive menu item cards (ALWAYS use after search_menu)
 - add_to_basket: Add items (use exact menuItemId from search_menu)
 - remove_from_basket: Remove items
-- get_basket_summary: Show basket contents
 - clear_basket: Empty the basket
 - submit_order: Submit the order (requires authentication)
 
@@ -205,11 +192,52 @@ CRITICAL RULES:
         console.log('🤖 CHATBOT REQUEST');
         console.log('='.repeat(60));
 
-        const basketContext = await this.buildBasketContextMessage(chatId, token);
+        const { message: basketContext, basket } = await this.loadBasketContext(chatId, token);
         const modelMessages = this.insertContextMessage(messages, basketContext);
 
         // Track search results for validation
         let searchResults: MenuItem[] = this.extractSearchResultsFromHistory(messages);
+
+        const lastUserMessage = this.getLastUserMessage(messages);
+        if (lastUserMessage && this.isCheckoutIntent(lastUserMessage)) {
+            if (!token) {
+                return {
+                    message: { role: 'assistant', content: '' },
+                    chatId,
+                    authRequired: true,
+                    tokenExpired: false,
+                };
+            }
+
+            if (!basket || !basket.basketMenuItems || basket.basketMenuItems.length === 0) {
+                return {
+                    message: { role: 'assistant', content: 'Your basket is empty. Please add items first.' },
+                    chatId,
+                };
+            }
+
+            const result = await flipdishApi.submitOrder(chatId, token);
+            if (!result.success) {
+                return {
+                    message: { role: 'assistant', content: result.error || 'Order failed.' },
+                    chatId,
+                };
+            }
+
+            const confirmation = result.leadTimePrompt
+                ? this.normalizeLeadTimePrompt(result.leadTimePrompt)
+                : result.orderId
+                    ? `Thanks! Your order has been placed.\nOrder ID: ${result.orderId}`
+                    : '';
+
+            return {
+                message: { role: 'assistant', content: confirmation },
+                chatId,
+                orderSubmitted: true,
+                orderId: result.orderId,
+                leadTimePrompt: result.leadTimePrompt,
+            };
+        }
 
         // Initial OpenAI call
         const response = await this.openai.chat.completions.create({
@@ -348,7 +376,7 @@ CRITICAL RULES:
         }
 
         // Get final response
-        const refreshedBasketContext = await this.buildBasketContextMessage(chatId, token);
+        const { message: refreshedBasketContext } = await this.loadBasketContext(chatId, token);
         const modelFunctionMessages = this.insertContextMessage(functionMessages, refreshedBasketContext);
 
         const finalResponse = await this.openai.chat.completions.create({
@@ -454,11 +482,6 @@ CRITICAL RULES:
                 return { status: 200, message: 'Basket cleared' };
             }
 
-            case 'get_basket_summary': {
-                const basket = await flipdishApi.getBasket(chatId, token);
-                return { status: 200, data: basket };
-            }
-
             case 'submit_order': {
                 if (!token) {
                     return {
@@ -551,29 +574,36 @@ CRITICAL RULES:
         return [context, ...messages];
     }
 
-    private async buildBasketContextMessage(chatId: string, token?: string): Promise<ChatMessage | null> {
+    private async loadBasketContext(
+        chatId: string,
+        token?: string
+    ): Promise<{ message: ChatMessage | null; basket: BasketSummary | null }> {
         try {
             const basket = await flipdishApi.getBasket(chatId, token);
-            const items = basket.basketMenuItems || [];
-            const total = basket.totalPrice ?? 0;
-
-            const lines = items.map(item => {
-                const itemTotal = item.totalPrice ?? item.unitPrice ?? 0;
-                return `- ${item.quantity} x ${item.name} (${itemTotal.toFixed(2)} EUR)`;
-            });
-
-            const summary = lines.length > 0
-                ? `${lines.join('\n')}\nTotal: ${total.toFixed(2)} EUR`
-                : 'Basket is empty.';
-
-            return {
-                role: 'system',
-                content: `Basket context (read-only):\n${summary}`,
-            };
+            return { message: this.formatBasketContext(basket), basket };
         } catch (error) {
             console.warn('⚠️ Failed to load basket context:', error);
-            return null;
+            return { message: null, basket: null };
         }
+    }
+
+    private formatBasketContext(basket: BasketSummary): ChatMessage {
+        const items = basket.basketMenuItems || [];
+        const total = basket.totalPrice ?? 0;
+
+        const lines = items.map(item => {
+            const itemTotal = item.totalPrice ?? item.unitPrice ?? 0;
+            return `- ${item.quantity} x ${item.name} (${itemTotal.toFixed(2)} EUR)`;
+        });
+
+        const summary = lines.length > 0
+            ? `${lines.join('\n')}\nTotal: ${total.toFixed(2)} EUR`
+            : 'Basket is empty.';
+
+        return {
+            role: 'system',
+            content: `Basket context (read-only):\n${summary}`,
+        };
     }
 
     private buildOrderConfirmation(messages: ChatMessage[]): string | null {
@@ -604,6 +634,20 @@ CRITICAL RULES:
         const trimmed = prompt.replace(/^Tell the user:\s*/i, '').trim();
         const unquoted = trimmed.replace(/^"+|"+$/g, '');
         return unquoted || 'Thanks! Your order has been placed.';
+    }
+
+    private getLastUserMessage(messages: ChatMessage[]): string | null {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') {
+                return messages[i].content || '';
+            }
+        }
+        return null;
+    }
+
+    private isCheckoutIntent(message: string): boolean {
+        const normalized = message.toLowerCase();
+        return /\b(buy|checkout|check out|order|place order|submit order|pay|purchase)\b/.test(normalized);
     }
 
     /**

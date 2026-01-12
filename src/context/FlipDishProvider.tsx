@@ -354,7 +354,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
             }
 
             // Refresh basket after tool calls
-            if (response.toolCalls && response.toolCalls.length > 0) {
+            if ((response.toolCalls && response.toolCalls.length > 0) || response.orderSubmitted) {
                 await refreshBasket();
             }
 
