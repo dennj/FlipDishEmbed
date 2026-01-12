@@ -36,6 +36,13 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
+    // Auto-verify when 4 digits are entered
+    useEffect(() => {
+        if (code.length === 4 && !loading) {
+            handleVerify();
+        }
+    }, [code]);
+
     if (!isOpen) return null;
 
     const handleSendCode = async () => {
@@ -51,6 +58,7 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     };
 
     const handleVerify = async () => {
+        if (code.length !== 4) return;
         setLoading(true);
         setError('');
         const result = await verifyOTP(phone, code);
@@ -111,14 +119,17 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
                                     onChange={(e) => setCode(e.target.value)}
                                     placeholder="0000"
                                     className="text-center text-2xl tracking-[0.5em] font-mono"
-                                    maxLength={6}
+                                    maxLength={4}
+                                    disabled={loading}
                                 />
                                 {error && <p className="text-destructive text-xs">{error}</p>}
+                                {loading && (
+                                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        <span>Verifying...</span>
+                                    </div>
+                                )}
                             </div>
-                            <Button className="w-full" onClick={handleVerify} disabled={loading || !code}>
-                                {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                                Verify
-                            </Button>
                         </div>
                     )}
                 </CardContent>
