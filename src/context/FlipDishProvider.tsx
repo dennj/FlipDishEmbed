@@ -315,19 +315,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         try {
             const result = await flipdishApi.submitOrder(sessionId, authToken, paymentAccountId);
             if (result.success) {
-                let cleared = false;
-                try {
-                    await flipdishApi.clearBasket(sessionId, authToken);
-                    cleared = true;
-                } catch (error) {
-                    console.warn('⚠️ Failed to clear basket after submit:', error);
-                }
-
-                if (cleared) {
-                    setBasketItems([]);
-                } else {
-                    await refreshBasket();
-                }
+                await refreshBasket();
             }
             return result;
         } catch (error: any) {

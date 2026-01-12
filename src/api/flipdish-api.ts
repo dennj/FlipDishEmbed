@@ -764,6 +764,11 @@ class FlipdishAPI {
         }
 
         console.log('✅ Order submitted:', data.data?.orderId);
+        try {
+            await this.clearBasket(chatId, token);
+        } catch (error) {
+            console.warn('⚠️ Failed to clear basket after submit:', error);
+        }
 
         return {
             success: true,

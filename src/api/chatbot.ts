@@ -33,6 +33,9 @@ export interface ChatResponse {
     allMessages?: ChatMessage[];
     authRequired?: boolean;
     tokenExpired?: boolean;
+    orderSubmitted?: boolean;
+    orderId?: string;
+    leadTimePrompt?: string;
 }
 
 // ============================================
@@ -241,6 +244,9 @@ CRITICAL RULES:
         let searchMenuCalled = false;
         let showItemsCalled = false;
         let newSearchResults: MenuItem[] = [];
+        let orderSubmitted = false;
+        let orderId: string | undefined;
+        let leadTimePrompt: string | undefined;
 
         for (const toolCall of toolCalls) {
             if (toolCall.type !== 'function') continue;
@@ -268,6 +274,12 @@ CRITICAL RULES:
                 if (functionName === 'search_menu' && result.data?.items) {
                     newSearchResults = result.data.items;
                     searchResults = newSearchResults;
+                }
+
+                if (functionName === 'submit_order' && result?.status === 200) {
+                    orderSubmitted = true;
+                    orderId = result?.data?.order?.orderId;
+                    leadTimePrompt = result?.data?.leadTimePrompt;
                 }
             } catch (error: any) {
                 result = this.handleToolError(error);
@@ -336,6 +348,9 @@ CRITICAL RULES:
             allMessages: [...functionMessages, finalMessage as any],
             authRequired,
             tokenExpired,
+            orderSubmitted,
+            orderId,
+            leadTimePrompt,
         };
     }
 
@@ -430,11 +445,6 @@ CRITICAL RULES:
 
                 const result = await flipdishApi.submitOrder(chatId, token);
                 if (result.success) {
-                    try {
-                        await flipdishApi.clearBasket(chatId, token);
-                    } catch (error) {
-                        console.warn('⚠️ Failed to clear basket after submit:', error);
-                    }
                     return {
                         status: 200,
                         data: {

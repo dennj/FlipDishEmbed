@@ -354,7 +354,10 @@ export function FlipDishChat() {
         if (!input.trim() || isLoading) return;
         const message = input;
         setInput('');
-        await sendMessage(message);
+        const response = await sendMessage(message);
+        if (response.orderSubmitted && showBasket) {
+            setShowBasket(false);
+        }
     };
 
     const renderMessageContent = (msg: any) => {
