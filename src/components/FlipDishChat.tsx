@@ -355,6 +355,9 @@ export function FlipDishChat() {
         const message = input;
         setInput('');
         const response = await sendMessage(message);
+        if (response.authRequired || response.tokenExpired) {
+            setShowAuth(true);
+        }
         if (response.orderSubmitted && showBasket) {
             setShowBasket(false);
         }
