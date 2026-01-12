@@ -320,6 +320,33 @@ CRITICAL RULES:
             });
         }
 
+        // Check for auth requirements
+        const { authRequired, tokenExpired } = this.checkAuthStatus(functionMessages);
+
+        const submittedOrderCall = toolCalls?.some(call =>
+            call.type === 'function' && call.function.name === 'submit_order'
+        );
+
+        if (authRequired || tokenExpired || submittedOrderCall) {
+            const orderConfirmation = this.buildOrderConfirmation(functionMessages);
+            const finalMessage: ChatMessage = {
+                role: 'assistant',
+                content: orderConfirmation || '',
+            };
+
+            return {
+                message: finalMessage,
+                toolCalls,
+                chatId,
+                allMessages: [...functionMessages, finalMessage as any],
+                authRequired,
+                tokenExpired,
+                orderSubmitted,
+                orderId,
+                leadTimePrompt,
+            };
+        }
+
         // Get final response
         const refreshedBasketContext = await this.buildBasketContextMessage(chatId, token);
         const modelFunctionMessages = this.insertContextMessage(functionMessages, refreshedBasketContext);
@@ -334,9 +361,6 @@ CRITICAL RULES:
         if ((!finalMessage.content || !finalMessage.content.trim()) && orderConfirmation) {
             finalMessage.content = orderConfirmation;
         }
-
-        // Check for auth requirements
-        const { authRequired, tokenExpired } = this.checkAuthStatus(functionMessages);
 
         return {
             message: {
