@@ -173,13 +173,27 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     serverUrl: config.serverUrl,
                 });
 
-                // Try to restore session
-                const storedSessionId = getCookie('flipdish_session_id');
+                // Try to restore session (sanitize stored value)
+                const rawStoredSessionId = getCookie('flipdish_session_id');
+                const storedSessionId = (rawStoredSessionId && rawStoredSessionId !== 'undefined' && rawStoredSessionId !== 'null')
+                    ? rawStoredSessionId : undefined;
+                const storedConfigHash = getCookie('flipdish_config_hash');
+                const currentConfigHash = `${config.appId}:${config.storeId}`;
+
+                // Invalidate session if config changed
+                const validStoredSession = storedSessionId && storedConfigHash === currentConfigHash
+                    ? storedSessionId
+                    : undefined;
 
                 // Create or restore session
-                const { chatId, basket: initialBasket, menu: initialMenu } = await flipdishApi.createSession(token || undefined, storedSessionId || undefined);
+                const { chatId, basket: initialBasket, menu: initialMenu } = await flipdishApi.createSession(token || undefined, validStoredSession);
                 setSessionId(chatId);
-                setCookie('flipdish_session_id', chatId, 30);
+
+                // Only store valid chatId
+                if (chatId && chatId !== 'undefined') {
+                    setCookie('flipdish_session_id', chatId, 30);
+                    setCookie('flipdish_config_hash', currentConfigHash, 30);
+                }
 
                 // Store menu items for AI context
                 if (initialMenu && initialMenu.length > 0) {
