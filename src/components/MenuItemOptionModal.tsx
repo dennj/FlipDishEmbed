@@ -8,7 +8,7 @@ import {
     DialogTitle,
 } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { MenuItem, MenuItemOptionSet, MenuItemOption } from '../api/flipdish-types';
+import { MenuItem, MenuItemOptionSetText, MenuItemOptionText, MenuItemOptionSelection } from '../api/flipdish-types';
 import { useFlipDish } from '../context/FlipDishProvider';
 import { Loader2, ArrowLeft } from 'lucide-react';
 
@@ -19,36 +19,43 @@ interface MenuItemOptionModalProps {
 }
 
 interface SelectionState {
-    optionSetId: number;
-    selectedOptionId: number | null;
+    optionSetId: string;
+    selectedOptions: string[];
 }
 
 export function MenuItemOptionModal({ isOpen, onClose, item }: MenuItemOptionModalProps) {
     const { updateBasket } = useFlipDish();
-    const [currentSet, setCurrentSet] = useState<MenuItemOptionSet | undefined>(item.menuItemOptions);
-    const [history, setHistory] = useState<MenuItemOptionSet[]>([]);
+    const optionSets = item.optionSets || [];
+    const [currentSetIndex, setCurrentSetIndex] = useState(0);
     const [selections, setSelections] = useState<SelectionState[]>([]);
     const [isAdding, setIsAdding] = useState(false);
 
     // Reset state when modal opens
     useEffect(() => {
         if (isOpen) {
-            setCurrentSet(item.menuItemOptions);
-            setHistory([]);
+            console.log('[OptionModal] Opening for item:', item.name, 'optionSets:', optionSets);
+            setCurrentSetIndex(0);
             setSelections([]);
             setIsAdding(false);
         }
     }, [isOpen, item]);
 
-    if (!currentSet) return null;
+    const currentSet = optionSets[currentSetIndex];
 
-    const handleOptionSelect = (option: MenuItemOption) => {
+    if (!currentSet) {
+        console.log('[OptionModal] No current set at index:', currentSetIndex, 'total sets:', optionSets.length);
+        return null;
+    }
+
+    const handleOptionSelect = (option: MenuItemOptionText) => {
+        console.log('[OptionModal] Selected option:', option.name, 'for set:', currentSet.optionSetId);
+
         // Find if we already have a selection for this set
-        const existingSelectionIndex = selections.findIndex(s => s.optionSetId === currentSet.menuItemOptionSetId);
+        const existingSelectionIndex = selections.findIndex(s => s.optionSetId === currentSet.optionSetId);
 
-        const newSelection = {
-            optionSetId: currentSet.menuItemOptionSetId,
-            selectedOptionId: option.menuItemOptionSetItemId
+        const newSelection: SelectionState = {
+            optionSetId: currentSet.optionSetId,
+            selectedOptions: [option.name] // Single select for now
         };
 
         let newSelections = [...selections];
@@ -59,64 +66,57 @@ export function MenuItemOptionModal({ isOpen, onClose, item }: MenuItemOptionMod
         }
         setSelections(newSelections);
 
-        // Determine next step
-        // In the recursive structure, the NEXT set is defined loosely.
-        // Based on inspection: "afterChoosingThis" exists on the OptionSet (the parent).
-        // Wait, if "afterChoosingThis" is on the Set, it means "After choosing *from* this set, go here".
-        // But what if different options lead to different paths?
-        // The API type I defined allows for `afterChoosingThis` on OptionSet.
-        // Let's assume the linear flow for now as observed in "Coffee".
-
-        if (currentSet.afterChoosingThis) {
-            setHistory([...history, currentSet]);
-            setCurrentSet(currentSet.afterChoosingThis);
+        // Move to next set or submit
+        if (currentSetIndex < optionSets.length - 1) {
+            setCurrentSetIndex(currentSetIndex + 1);
         } else {
-            // End of the line
+            // End of all option sets
             submitOrder(newSelections);
         }
     };
 
     const handleSkip = () => {
-        if (currentSet.afterChoosingThis) {
-            setHistory([...history, currentSet]);
-            setCurrentSet(currentSet.afterChoosingThis);
+        console.log('[OptionModal] Skipping set:', currentSet.optionSetId);
+        if (currentSetIndex < optionSets.length - 1) {
+            setCurrentSetIndex(currentSetIndex + 1);
         } else {
             submitOrder(selections);
         }
     };
 
     const handleBack = () => {
-        if (history.length > 0) {
-            const previousSet = history[history.length - 1];
-            setHistory(history.slice(0, -1));
-            setCurrentSet(previousSet);
-            // Verify: Should we clear the selection for the current set when going back?
-            // Maybe not, keeps state.
+        if (currentSetIndex > 0) {
+            setCurrentSetIndex(currentSetIndex - 1);
         }
     };
 
     const submitOrder = async (finalSelections: SelectionState[]) => {
+        console.log('[OptionModal] Submitting with selections:', finalSelections);
         setIsAdding(true);
         try {
-            // Collect all selected option IDs
-            const allOptionIds = finalSelections.map(s => s.selectedOptionId).filter((id): id is number => id !== null);
+            // Convert to API format
+            const optionSelections: MenuItemOptionSelection[] = finalSelections.map(s => ({
+                optionSetId: s.optionSetId,
+                selectedOptions: s.selectedOptions
+            }));
+
+            console.log('[OptionModal] Calling updateBasket with optionSelections:', optionSelections);
 
             await updateBasket({
                 type: 'add',
                 menuItemId: item.menuItemId,
                 quantity: 1,
-                options: allOptionIds
+                optionSelections
             });
             onClose();
         } catch (error) {
-            console.error("Failed to add item with options:", error);
+            console.error("[OptionModal] Failed to add item with options:", error);
         } finally {
             setIsAdding(false);
         }
     };
 
-    const isOptional = currentSet.minSelectCount === 0 ||
-        (currentSet.optionsRules?.toLowerCase().includes('optional'));
+    const isOptional = !currentSet.required || currentSet.min === 0;
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -124,28 +124,30 @@ export function MenuItemOptionModal({ isOpen, onClose, item }: MenuItemOptionMod
                 <DialogHeader>
                     <DialogTitle>{item.name}</DialogTitle>
                     <DialogDescription>
-                        {currentSet.name || "Choose an option"}
+                        {currentSet.optionSetId}
+                        {currentSet.required && <span className="text-destructive ml-1">*</span>}
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-4 py-4 max-h-[60vh] overflow-y-auto">
-                    {currentSet.optionsRules && (
-                        <p className="text-sm text-muted-foreground">{currentSet.optionsRules}</p>
-                    )}
+                    <p className="text-sm text-muted-foreground">
+                        {currentSet.required ? 'Required - ' : 'Optional - '}
+                        Select {currentSet.min === currentSet.max ? currentSet.min : `${currentSet.min}-${currentSet.max}`}
+                    </p>
 
                     <div className="grid gap-2">
-                        {currentSet.options.map((option) => (
+                        {currentSet.options.map((option, idx) => (
                             <Button
-                                key={option.menuItemOptionSetItemId}
+                                key={`${currentSet.optionSetId}-${option.name}-${idx}`}
                                 variant="outline"
                                 className="justify-between h-auto py-3 px-4"
                                 onClick={() => handleOptionSelect(option)}
                                 disabled={isAdding}
                             >
                                 <span>{option.name}</span>
-                                {option.price > 0 && (
+                                {option.price && option.price > 0 && (
                                     <span className="text-muted-foreground">
-                                        +{(option.price).toFixed(2)}
+                                        +{option.price.toFixed(2)}
                                     </span>
                                 )}
                             </Button>
@@ -155,7 +157,7 @@ export function MenuItemOptionModal({ isOpen, onClose, item }: MenuItemOptionMod
 
                 <DialogFooter className="flex flex-row justify-between sm:justify-between w-full">
                     <div className="flex-1">
-                        {history.length > 0 && (
+                        {currentSetIndex > 0 && (
                             <Button variant="ghost" onClick={handleBack} disabled={isAdding} className="gap-1 pl-0">
                                 <ArrowLeft className="w-4 h-4" />
                                 Back
@@ -165,7 +167,7 @@ export function MenuItemOptionModal({ isOpen, onClose, item }: MenuItemOptionMod
                     <div className="flex-1 flex justify-end">
                         {isOptional && (
                             <Button variant="secondary" onClick={handleSkip} disabled={isAdding}>
-                                Skip
+                                {currentSetIndex < optionSets.length - 1 ? 'Skip' : 'Add Without'}
                             </Button>
                         )}
                     </div>

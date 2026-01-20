@@ -27,7 +27,7 @@ export function MenuItemCard({ item, compact = false }: MenuItemCardProps) {
 
     const handleAdd = async () => {
         // If item has options, open modal instead of adding directly
-        if (item.menuItemOptions) {
+        if (item.optionSets && item.optionSets.length > 0) {
             setIsModalOpen(true);
             return;
         }
@@ -106,7 +106,7 @@ export function MenuItemCard({ item, compact = false }: MenuItemCardProps) {
                         ) : (
                             <>
                                 <Plus className="w-3 h-3" />
-                                {item.menuItemOptions ? 'Customize' : 'Add'}
+                                {item.optionSets && item.optionSets.length > 0 ? 'Customize' : 'Add'}
                             </>
                         )}
                     </Button>

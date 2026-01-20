@@ -80,6 +80,7 @@ export interface MenuItem {
     price: number;
     imageUrl?: string;
     menuItemOptionSets?: MenuItemOptionSet[];
+    optionSets?: MenuItemOptionSetText[]; // From search/text API
 }
 
 export interface MenuItemOptionSet {
@@ -95,6 +96,21 @@ export interface MenuItemOption {
     name: string;
     price: number;
     isAvailable?: boolean;
+}
+
+// Text-based option sets from search/text API
+export interface MenuItemOptionSetText {
+    optionSetId: string;
+    required: boolean;
+    min: number;
+    max: number;
+    options: MenuItemOptionText[];
+    nextOptionSet?: string | null;
+}
+
+export interface MenuItemOptionText {
+    name: string;
+    price?: number;
 }
 
 // ============================================
