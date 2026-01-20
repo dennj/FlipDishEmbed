@@ -4,6 +4,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useFlipDish } from '../context/FlipDishProvider';
 import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User, CreditCard, Check } from 'lucide-react';
 import { cn } from '../utils/cn';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import {
     Card,
@@ -416,15 +418,23 @@ export function FlipDishChat() {
                     </Avatar>
 
                     <div className="flex flex-col gap-1">
-                        <div className="bg-card text-card-foreground border rounded-2xl rounded-bl-sm px-5 py-3 text-sm shadow-sm">
-                            <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                        <div className="bg-card text-card-foreground border rounded-2xl rounded-bl-sm px-5 py-3 text-sm shadow-sm overflow-hidden prose prose-sm dark:prose-invert max-w-none leading-relaxed break-words [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4">
+                            <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={{
+                                    // Use defaults but ensure links open in new tab
+                                    a: (props: any) => <a target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2 hover:text-primary/80" {...props} />,
+                                }}
+                            >
+                                {msg.content}
+                            </ReactMarkdown>
                         </div>
                     </div>
                 </div>
             );
         }
 
-        return null;
+        return null; // Ensure functional component return type compliance
     };
 
     // Filter messages to show (User, Assistant, and Tools with displayable content)
