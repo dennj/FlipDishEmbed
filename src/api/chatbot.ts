@@ -82,6 +82,22 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
+            name: 'verify_option_selection',
+            description: 'Verifies if a specific option selection is valid for a given item option set.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    menuItemId: { type: 'number' },
+                    optionSetId: { type: 'string', description: 'The exact name of the option set (e.g. "Choose your base")' },
+                    selectedOption: { type: 'string', description: 'The exact name of the selected option (e.g. "Brown Rice")' }
+                },
+                required: ['menuItemId', 'optionSetId', 'selectedOption']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
             name: 'add_to_basket',
             description: 'Adds menu items to the basket. Use exact menuItemId from search_menu.',
             parameters: {
@@ -94,6 +110,25 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     quantity: {
                         type: 'number',
                         description: 'Quantity to add (default: 1)',
+                    },
+                    optionSelections: {
+                        type: 'array',
+                        description: 'List of selected options for the item',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                optionSetId: {
+                                    type: 'string',
+                                    description: 'The exact Name of the Option Set (e.g., "Choose your base")',
+                                },
+                                selectedOptions: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'List of exact Names of the selected options (e.g., ["Brown Rice"])',
+                                },
+                            },
+                            required: ['optionSetId', 'selectedOptions'],
+                        },
                     },
                 },
                 required: ['menuItemId'],
@@ -115,6 +150,25 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     quantity: {
                         type: 'number',
                         description: 'Quantity to remove (default: 1)',
+                    },
+                    optionSelections: {
+                        type: 'array',
+                        description: 'List of options to remove (if removing a specific customization)',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                optionSetId: {
+                                    type: 'string',
+                                    description: 'The exact Name of the Option Set',
+                                },
+                                selectedOptions: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'List of exact Names of the selected options',
+                                },
+                            },
+                            required: ['optionSetId', 'selectedOptions'],
+                        },
                     },
                 },
                 required: ['menuItemId'],
@@ -170,16 +224,75 @@ export class ChatbotService {
 Tools available:
 - search_menu: Search for food items
 - show_items: Display interactive menu item cards (ALWAYS use after search_menu)
-- add_to_basket: Add items (use exact menuItemId from search_menu)
-- remove_from_basket: Remove items
+- verify_option_selection: Verify if an option choice is valid (Use BEFORE adding to basket)
+- add_to_basket: Add items (use exact menuItemId and Validated Option Selections)
+- remove_from_basket: Remove items (specify options if removing a specific customization)
 - clear_basket: Empty the basket
 - submit_order: Submit the order (requires authentication)
 
 CRITICAL RULES:
-1. After search_menu, ALWAYS call show_items with ALL menuItemIds
-2. NEVER describe menu items in text - show_items displays them
-3. NEVER claim an order was placed without calling submit_order
-4. If submit_order returns AUTHENTICATION_REQUIRED, tell user to sign in`;
+1. **Menu Display**: After search_menu, ALWAYS call show_items with ALL menuItemIds. NEVER describe items in text.
+2. **Option Selection**:
+   - When a user selects an item with options (e.g. "I want the Burrito"), ask for their choices based on the Option Sets.
+   - **Branching Options**: If an option set has a "Next Option Set" (e.g. "Choose your base" -> "Choose Your Protein"), ask for the first set, wait for the user to answer, and THEN ask for the next set. DO NOT ask for all options at once.
+   - **Text-Based Selection**: You must use the EXACT names of Option Sets and Options from the menu data (case-sensitive).
+   - **Validation**: Before calling add_to_basket, call verify_option_selection for EACH choice to ensure it matches the menu data exactly.
+3. **Adding to Basket**:
+   - Only call add_to_basket when you have configured all required option sets.
+   - Construct the \`optionSelections\` array carefully using the verified text names.
+4. **Order Submission**:
+   - NEVER claim an order was placed without calling submit_order.
+   - If submit_order returns AUTHENTICATION_REQUIRED, tell user to sign in.`;
+    }
+
+    /**
+     * Format menu items into context for the AI to understand available items
+     */
+    formatMenuContext(menuItems: MenuItem[]): string {
+        if (!menuItems || menuItems.length === 0) {
+            return '';
+        }
+
+        // Group items by section for better organization
+        const sections = new Map<string, MenuItem[]>();
+        for (const item of menuItems) {
+            const section = item.menuSectionName || 'Other';
+            if (!sections.has(section)) {
+                sections.set(section, []);
+            }
+            sections.get(section)!.push(item);
+        }
+
+        let menuText = '\n\n--- AVAILABLE MENU ---\n';
+        menuText += 'The following items are available for ordering:\n\n';
+
+        for (const [section, items] of sections) {
+            menuText += `**${section}**\n`;
+            for (const item of items) {
+                const price = typeof item.price === 'number' ? ` - €${item.price.toFixed(2)}` : '';
+                menuText += `- ${item.name} (ID: ${item.menuItemId})${price}\n`;
+                if (item.description) {
+                    menuText += `  ${item.description}\n`;
+                }
+                // Add option sets to context so the AI knows the names
+                if (item.menuItemOptionSets && item.menuItemOptionSets.length > 0) {
+                    menuText += `  Options:\n`;
+                    for (const os of item.menuItemOptionSets) {
+                        menuText += `    - Set: "${os.name}" (Min: ${os.minSelectCount}, Max: ${os.maxSelectCount})\n`;
+                        if (os.menuItemOptionSetItems) {
+                            const optionNames = os.menuItemOptionSetItems.map(o => `"${o.name}"`).join(', ');
+                            menuText += `      Choices: ${optionNames}\n`;
+                        }
+                    }
+                }
+            }
+            menuText += '\n';
+        }
+
+        menuText += '--- END MENU ---\n';
+        menuText += '\nUse these menuItemIds and EXACT Option Names when the user wants to add items to their basket.\n';
+
+        return menuText;
     }
 
     /**
@@ -434,6 +547,47 @@ CRITICAL RULES:
                 return { status: 200, displayType: 'menu_cards', items };
             }
 
+            case 'verify_option_selection': {
+                const { menuItemId, optionSetId, selectedOption } = args;
+                const item = searchResults.find(i => i.menuItemId === menuItemId);
+
+                if (!item) {
+                    return { error: `Item ${menuItemId} not found in search results. Please search again.` };
+                }
+
+                if (!item.menuItemOptionSets) {
+                    return { error: `Item ${item.name} has no options.` };
+                }
+
+                // Case-insensitive search for resilience, but return exact name
+                const optionSet = item.menuItemOptionSets.find(os =>
+                    os.name.toLowerCase() === optionSetId.toLowerCase()
+                );
+
+                if (!optionSet) {
+                    const availableSets = item.menuItemOptionSets.map(os => os.name).join(', ');
+                    return { error: `Option Set "${optionSetId}" not found. Available sets: ${availableSets}` };
+                }
+
+                const option = optionSet.menuItemOptionSetItems.find(o =>
+                    o.name.toLowerCase() === selectedOption.toLowerCase()
+                );
+
+                if (!option) {
+                    const availableOptions = optionSet.menuItemOptionSetItems.map(o => o.name).join(', ');
+                    return { error: `Option "${selectedOption}" not found in set "${optionSet.name}". Available options: ${availableOptions}` };
+                }
+
+                return {
+                    status: 200,
+                    valid: true,
+                    verifiedSelection: {
+                        optionSetId: optionSet.name, // Return exact correct casing
+                        selectedOption: option.name
+                    }
+                };
+            }
+
             case 'add_to_basket': {
                 // Validate menuItemId against search results
                 const validIds = searchResults.map(item => item.menuItemId);
@@ -449,6 +603,7 @@ CRITICAL RULES:
                         addMenuItems: [{
                             menuItemId: args.menuItemId,
                             quantity: args.quantity || 1,
+                            optionSelections: args.optionSelections
                         }],
                     },
                     token
@@ -471,6 +626,7 @@ CRITICAL RULES:
                         removeMenuItems: [{
                             menuItemId: args.menuItemId,
                             quantity: args.quantity || 1,
+                            optionSelections: args.optionSelections
                         }],
                     },
                     token

@@ -59,9 +59,14 @@ export interface BasketSummary {
 }
 
 export type BasketAction =
-    | { type: 'add'; menuItemId: number; quantity: number; options?: number[] }
-    | { type: 'remove'; menuItemId: number; quantity: number }
+    | { type: 'add'; menuItemId: number; quantity: number; optionSelections?: MenuItemOptionSelection[] }
+    | { type: 'remove'; menuItemId: number; quantity: number; optionSelections?: MenuItemOptionSelection[] }
     | { type: 'clear' };
+
+export interface MenuItemOptionSelection {
+    optionSetId: string;
+    selectedOptions: string[];
+}
 
 // ============================================
 // MENU
@@ -74,17 +79,15 @@ export interface MenuItem {
     menuSectionName: string;
     price: number;
     imageUrl?: string;
-    menuItemOptions?: MenuItemOptionSet;
+    menuItemOptionSets?: MenuItemOptionSet[];
 }
 
 export interface MenuItemOptionSet {
     menuItemOptionSetId: number;
-    name?: string;
-    optionsRules?: string;
-    minSelectCount?: number;
-    maxSelectCount?: number;
-    options: MenuItemOption[];
-    afterChoosingThis?: MenuItemOptionSet;
+    name: string;
+    minSelectCount: number;
+    maxSelectCount: number;
+    menuItemOptionSetItems: MenuItemOption[];
 }
 
 export interface MenuItemOption {

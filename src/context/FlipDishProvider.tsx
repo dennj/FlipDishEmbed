@@ -17,6 +17,7 @@ import {
     PaymentAccount,
     BasketAction,
     CustomerContext,
+    MenuItem,
 } from '../api/flipdish-types';
 
 // ============================================
@@ -116,6 +117,9 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
     // Basket state
     const [basketItems, setBasketItems] = useState<BasketItem[]>([]);
 
+    // Menu state (loaded at session creation)
+    const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+
     // Payment state
     const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([]);
     const [selectedPaymentAccountId, setSelectedPaymentAccountId] = useState<number | null>(null);
@@ -173,9 +177,15 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                 const storedSessionId = getCookie('flipdish_session_id');
 
                 // Create or restore session
-                const { chatId, basket: initialBasket } = await flipdishApi.createSession(token || undefined, storedSessionId || undefined);
+                const { chatId, basket: initialBasket, menu: initialMenu } = await flipdishApi.createSession(token || undefined, storedSessionId || undefined);
                 setSessionId(chatId);
                 setCookie('flipdish_session_id', chatId, 30);
+
+                // Store menu items for AI context
+                if (initialMenu && initialMenu.length > 0) {
+                    setMenuItems(initialMenu);
+                    console.log(`📋 Menu loaded: ${initialMenu.length} items`);
+                }
 
                 // Get restaurant status
                 const status = await flipdishApi.getRestaurantStatus();
@@ -204,10 +214,15 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     setPaymentAccounts(accounts);
                 }
 
-                // Initialize messages with system prompt
+                // Initialize messages with system prompt + menu context
+                const systemPrompt = chatbotService.getSystemPrompt();
+                const menuContext = initialMenu && initialMenu.length > 0
+                    ? chatbotService.formatMenuContext(initialMenu)
+                    : '';
+
                 setMessages([{
                     role: 'system',
-                    content: chatbotService.getSystemPrompt(),
+                    content: systemPrompt + menuContext,
                 }]);
 
                 setIsInitialized(true);
@@ -277,12 +292,13 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     payload.addMenuItems = [{
                         menuItemId: action.menuItemId,
                         quantity: action.quantity,
-                        menuItemOptionSetItems: action.options
+                        optionSelections: action.optionSelections
                     }];
                 } else if (action.type === 'remove') {
                     payload.removeMenuItems = [{
                         menuItemId: action.menuItemId,
-                        quantity: action.quantity
+                        quantity: action.quantity,
+                        optionSelections: action.optionSelections
                     }];
                 }
                 await flipdishApi.updateBasket(sessionId, payload, token || undefined);

@@ -271,7 +271,7 @@ class FlipdishAPI {
     // SESSION METHODS
     // ----------------------------------------
 
-    async createSession(token?: string, chatId?: string): Promise<{ chatId: string; basket?: BasketSummary }> {
+    async createSession(token?: string, chatId?: string): Promise<{ chatId: string; basket?: BasketSummary; menu?: MenuItem[] }> {
         if (this.config.serverUrl) {
             return this.callProxy('createSession', [
                 this.config.appId,
@@ -590,11 +590,12 @@ class FlipdishAPI {
             addMenuItems?: Array<{
                 menuItemId: number;
                 quantity: number;
-                menuItemOptionSetItems?: number[];
+                optionSelections?: Array<{ optionSetId: string; selectedOptions: string[] }>;
             }>;
             removeMenuItems?: Array<{
                 menuItemId: number;
                 quantity: number;
+                optionSelections?: Array<{ optionSetId: string; selectedOptions: string[] }>;
             }>;
         },
         token?: string
