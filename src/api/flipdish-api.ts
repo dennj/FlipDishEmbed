@@ -140,7 +140,9 @@ class FlipdishAPI {
                 body: JSON.stringify({ action, args }),
             });
 
-            const data = await response.json();
+            // Safe JSON parsing - handle empty responses
+            const text = await response.text();
+            const data = text ? JSON.parse(text) : {};
             console.log(`✅ Proxy response for ${action}:`, response.status, response.ok, data);
 
             // Handle Vercel function errors
