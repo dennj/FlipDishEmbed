@@ -549,40 +549,53 @@ CRITICAL RULES:
 
             case 'verify_option_selection': {
                 const { menuItemId, optionSetId, selectedOption } = args;
+
+                console.log('🔍 verify_option_selection called:', { menuItemId, optionSetId, selectedOption });
+                console.log('   searchResults length:', searchResults.length);
+                console.log('   searchResults IDs:', searchResults.map(i => i.menuItemId));
+
                 const item = searchResults.find(i => i.menuItemId === menuItemId);
+
+                console.log('   Found item:', item ? item.name : 'NOT FOUND');
+                if (item) {
+                    console.log('   Item keys:', Object.keys(item));
+                    console.log('   optionSets:', item.optionSets);
+                }
 
                 if (!item) {
                     return { error: `Item ${menuItemId} not found in search results. Please search again.` };
                 }
 
-                if (!item.menuItemOptionSets) {
+                // Use optionSets from search/text API
+                if (!item.optionSets || item.optionSets.length === 0) {
                     return { error: `Item ${item.name} has no options.` };
                 }
 
-                // Case-insensitive search for resilience, but return exact name
-                const optionSet = item.menuItemOptionSets.find(os =>
-                    os.name.toLowerCase() === optionSetId.toLowerCase()
+                // Case-insensitive search using optionSetId field
+                const optionSet = item.optionSets.find((os: any) =>
+                    os.optionSetId?.toLowerCase() === optionSetId.toLowerCase()
                 );
 
                 if (!optionSet) {
-                    const availableSets = item.menuItemOptionSets.map(os => os.name).join(', ');
+                    const availableSets = item.optionSets.map((os: any) => os.optionSetId).join(', ');
                     return { error: `Option Set "${optionSetId}" not found. Available sets: ${availableSets}` };
                 }
 
-                const option = optionSet.menuItemOptionSetItems.find(o =>
-                    o.name.toLowerCase() === selectedOption.toLowerCase()
+                // Use options array (not menuItemOptionSetItems)
+                const option = optionSet.options?.find((o: any) =>
+                    o.name?.toLowerCase() === selectedOption.toLowerCase()
                 );
 
                 if (!option) {
-                    const availableOptions = optionSet.menuItemOptionSetItems.map(o => o.name).join(', ');
-                    return { error: `Option "${selectedOption}" not found in set "${optionSet.name}". Available options: ${availableOptions}` };
+                    const availableOptions = optionSet.options?.map((o: any) => o.name).join(', ') || 'none';
+                    return { error: `Option "${selectedOption}" not found in set "${optionSet.optionSetId}". Available options: ${availableOptions}` };
                 }
 
                 return {
                     status: 200,
                     valid: true,
                     verifiedSelection: {
-                        optionSetId: optionSet.name, // Return exact correct casing
+                        optionSetId: optionSet.optionSetId, // Return exact correct casing
                         selectedOption: option.name
                     }
                 };
@@ -668,30 +681,19 @@ CRITICAL RULES:
      * Handle tool execution errors
      */
     private handleToolError(error: any): any {
-        if (error instanceof FlipdishApiError) {
-            if (error.errorCode === 'TOKEN_EXPIRED') {
-                return {
-                    error: 'TOKEN_EXPIRED',
-                    message: 'Your session has expired. Please sign in again.',
-                };
-            }
-            if (error.message?.includes('closed')) {
-                return {
-                    error: 'RESTAURANT_CLOSED',
-                    message: 'The restaurant is currently closed.',
-                };
-            }
-            return { error: error.userMessage || error.message };
-        }
-
-        if (error.message?.includes('AUTHENTICATION_REQUIRED')) {
+        if (error.errorCode === 'TOKEN_EXPIRED') {
             return {
-                error: 'AUTHENTICATION_REQUIRED',
-                message: 'Please sign in to place your order.',
+                error: 'TOKEN_EXPIRED',
+                message: 'Your session has expired. Please sign in again.',
             };
         }
-
-        return { error: error.message };
+        if (error.message?.includes('closed')) {
+            return {
+                error: 'RESTAURANT_CLOSED',
+                message: 'The restaurant is currently closed.',
+            };
+        }
+        return { error: error.userMessage || error.message };
     }
 
     /**

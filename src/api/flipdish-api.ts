@@ -576,7 +576,8 @@ class FlipdishAPI {
         if (!response.ok) {
             throw new FlipdishApiError(
                 data.serverErrorMessage || 'Failed to get basket',
-                response.status
+                response.status,
+                (response.status === 401 || response.status === 403) ? 'TOKEN_EXPIRED' : undefined
             );
         }
 
@@ -627,7 +628,7 @@ class FlipdishAPI {
             throw new FlipdishApiError(
                 data.customerErrorMessage || data.serverErrorMessage || 'Failed to update basket',
                 response.status,
-                undefined,
+                (response.status === 401 || response.status === 403) ? 'TOKEN_EXPIRED' : undefined,
                 data.customerErrorMessage
             );
         }
@@ -687,7 +688,8 @@ class FlipdishAPI {
         if (!response.ok) {
             throw new FlipdishApiError(
                 data.serverErrorMessage || 'Menu search failed',
-                response.status
+                response.status,
+                (response.status === 401 || response.status === 403) ? 'TOKEN_EXPIRED' : undefined
             );
         }
 
@@ -703,7 +705,8 @@ class FlipdishAPI {
             price: item.price || item.Price,
             // Map possible image fields
             imageUrl: item.imageUrl || item.ImageUrl || item.ImageName,
-            menuItemOptions: item.menuItemOptions || item.MenuItemOptions,
+            // Map option sets - search/text API returns optionSets (MenuItemOptionSetText[])
+            optionSets: item.optionSets || item.OptionSets,
         }));
     }
 

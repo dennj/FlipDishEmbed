@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useFlipDish } from '../context/FlipDishProvider';
-import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User, CreditCard, Check } from 'lucide-react';
+import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User, CreditCard, Check, Plus, Minus } from 'lucide-react';
 import { cn } from '../utils/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -15,10 +15,12 @@ import {
     CardContent,
     CardFooter,
 } from './ui/card';
+import { flipdishApi } from '../api/flipdish-api';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { MenuItemCarousel } from './MenuItemCard';
+import { BasketItem, MenuItemOptionSelection, MenuItem, MenuItemOptionSetText, MenuItemOptionText } from '../api/flipdish-types';
 
 // ============================================
 // AUTH MODAL
@@ -151,9 +153,114 @@ interface BasketPanelProps {
 }
 
 function BasketPanel({ isOpen, onClose, onSignInNeeded }: BasketPanelProps) {
-    const { basketItems, basketTotal, isAuthenticated, defaultPaymentAccount, placeOrder, addMessage } = useFlipDish();
+    const { basketItems, basketTotal, isAuthenticated, defaultPaymentAccount, placeOrder, addMessage, updateBasket, menuItems, addMenuItems, sessionId } = useFlipDish();
     const [isPlacingOrder, setIsPlacingOrder] = React.useState(false);
+    const [updatingItemId, setUpdatingItemId] = React.useState<number | null>(null);
     const [error, setError] = React.useState<string | null>(null);
+
+    const getOptionSelections = (item: BasketItem, explicitMenuItem?: MenuItem): MenuItemOptionSelection[] | undefined => {
+        if (!item.menuItemOptionSetItems || item.menuItemOptionSetItems.length === 0) return undefined;
+
+        // Find the original menu item to get option set IDs
+        // Use the explicit one if provided (avoids stale state race condition), otherwise look in context
+        const menuItem = explicitMenuItem || menuItems.find(m => m.menuItemId === item.menuItemId);
+        if (!menuItem || !menuItem.optionSets) return undefined;
+
+        const selections: MenuItemOptionSelection[] = [];
+
+        // Group basket options by their set
+        // Challenge: Basket options don't have set IDs directly, we have to infer from the menu definition
+        // We iterate through the menu's option sets and see if any selected options match
+
+        if (menuItem.optionSets) {
+            menuItem.optionSets.forEach((optionSet: MenuItemOptionSetText) => {
+                const selectedOptionsInSet: string[] = [];
+
+                optionSet.options.forEach((option: MenuItemOptionText) => {
+                    // Check if this option is in our basket item's choices
+                    // Note: This relies on unique option names within the item context, which is generally true but not guaranteed by schema
+                    // A more robust way would need option IDs from the basket, but the current type might not have them fully mapped?
+                    // Checking BasketItemOption definition: it has menuItemOptionSetItemId but not the set ID.
+
+                    const found = item.menuItemOptionSetItems?.find(
+                        i => i.name === option.name
+                    );
+
+                    if (found) {
+                        selectedOptionsInSet.push(option.name);
+                    }
+                });
+
+                if (selectedOptionsInSet.length > 0) {
+                    selections.push({
+                        optionSetId: optionSet.optionSetId,
+                        selectedOptions: selectedOptionsInSet
+                    });
+                }
+            });
+        }
+
+        return selections.length > 0 ? selections : undefined;
+    };
+
+    const handleUpdateQuantity = async (item: BasketItem, delta: number, idx: number) => {
+        console.log(`🔘 Update Quantity Clicked:`, { item, delta, idx });
+        setUpdatingItemId(idx);
+
+        try {
+            // Explicit Failure Check: We must have the menu definition to update items with options
+            let menuItem: MenuItem | undefined = undefined;
+
+            if (item.menuItemOptionSetItems && item.menuItemOptionSetItems.length > 0) {
+                menuItem = menuItems.find(m => m.menuItemId === item.menuItemId);
+
+                // LAZY LOAD: If we don't have the definition, try to fetch it specifically (self-healing)
+                if (!menuItem && sessionId) {
+                    console.log(`⚠️ Item ${item.menuItemId} missing definition. Attempting lazy fetch...`);
+                    try {
+                        // Search by exact name to find the definition
+                        const results = await flipdishApi.searchMenu(sessionId, item.name);
+                        const found = results.find(m => m.menuItemId === item.menuItemId); // ensure ID match
+                        if (found) {
+                            console.log(`✅ Lazy fetch successful for ${item.name}`);
+                            addMenuItems([found]);
+                            menuItem = found; // Update local reference for this run
+                        } else {
+                            console.warn(`❌ Lazy fetch returned results but ID mismatch or not found.`);
+                        }
+                    } catch (err) {
+                        console.error("Lazy fetch failed:", err);
+                    }
+                }
+
+                if (!menuItem) {
+                    alert("System Error: Menu item definition missing. Cannot update options. Please reload or contact support.");
+                    throw new Error(`Menu item definition not found for ID ${item.menuItemId}`);
+                }
+            } else {
+                // For items without options (simple items), we don't strictly need the definition, 
+                // but it's good practice. We'll proceed without it for now as strict check is only for options.
+            }
+
+            // Pass the menuItem (which might be the one we just fetched) to avoid race condition with stale context state
+            const optionSelections = getOptionSelections(item, menuItem);
+
+            await updateBasket({
+                type: delta > 0 ? 'add' : 'remove',
+                menuItemId: item.menuItemId,
+                quantity: Math.abs(delta),
+                optionSelections
+            });
+        } catch (e) {
+            console.error("Failed to update quantity", e);
+            // If it's not the specific alert we just threw, might be API error
+            if (e instanceof Error && !e.message.includes("Menu item definition")) {
+                // optionally show error in UI state
+            }
+        } finally {
+            setUpdatingItemId(null);
+        }
+    };
 
     const buildConfirmationMessage = (leadTimePrompt?: string, orderId?: string) => {
         let message = 'Thanks! Your order has been placed.';
@@ -214,10 +321,42 @@ function BasketPanel({ isOpen, onClose, onSignInNeeded }: BasketPanelProps) {
                             {basketItems.map((item, idx) => (
                                 <div key={idx} className="flex justify-between items-start pb-4 border-b last:border-0 last:pb-0">
                                     <div className="flex-1 min-w-0">
-                                        <p className="font-medium text-sm">{item.name}</p>
-                                        <p className="text-xs text-muted-foreground">Qty: {item.quantity}</p>
+                                        <div className="flex justify-between">
+                                            <p className="font-medium text-sm">{item.name}</p>
+                                            <p className="font-semibold text-sm text-right">{item.totalPrice.toFixed(2)}</p>
+                                        </div>
+                                        {item.menuItemOptionSetItems && item.menuItemOptionSetItems.length > 0 && (
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                {item.menuItemOptionSetItems.map(opt => opt.name).join(', ')}
+                                            </p>
+                                        )}
+
+                                        <div className="flex items-center gap-3 mt-3">
+                                            <div className="flex items-center border rounded-md shadow-sm bg-background">
+                                                <button
+                                                    className="p-1 px-2 hover:bg-muted text-muted-foreground transition-colors disabled:opacity-50"
+                                                    onClick={() => handleUpdateQuantity(item, -1, idx)}
+                                                    disabled={updatingItemId === idx}
+                                                >
+                                                    <Minus className="w-3 h-3" />
+                                                </button>
+                                                <span className="text-xs font-medium w-6 text-center">
+                                                    {updatingItemId === idx ? (
+                                                        <Loader2 className="w-3 h-3 animate-spin mx-auto" />
+                                                    ) : (
+                                                        item.quantity
+                                                    )}
+                                                </span>
+                                                <button
+                                                    className="p-1 px-2 hover:bg-muted text-muted-foreground transition-colors disabled:opacity-50"
+                                                    onClick={() => handleUpdateQuantity(item, 1, idx)}
+                                                    disabled={updatingItemId === idx}
+                                                >
+                                                    <Plus className="w-3 h-3" />
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <p className="font-semibold text-sm ml-3 text-right">{item.totalPrice.toFixed(2)}</p>
                                 </div>
                             ))}
                         </div>
@@ -347,6 +486,7 @@ export function FlipDishChat() {
         basketItems,
         logout,
         phoneNumber,
+        addMenuItems,
     } = useFlipDish();
 
     const [input, setInput] = useState('');
@@ -363,17 +503,47 @@ export function FlipDishChat() {
         }
     }, [messages]);
 
+    // Capture menu items from tool messages to populate our local cache
+    useEffect(() => {
+        messages.forEach(msg => {
+            if (msg.role === 'tool') {
+                try {
+                    const content = JSON.parse(msg.content);
+                    if (content.displayType === 'menu_cards' && content.items && Array.isArray(content.items)) {
+                        addMenuItems(content.items);
+                    }
+                } catch {
+                    // Ignore invalid JSON
+                }
+            }
+        });
+    }, [messages, addMenuItems]);
+
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
         const message = input;
         setInput('');
-        const response = await sendMessage(message);
-        if (response.authRequired || response.tokenExpired) {
-            setReturnToBasket(true);
-            setShowAuth(true);
-        }
-        if (response.orderSubmitted && showBasket) {
-            setShowBasket(false);
+
+        try {
+            const response = await sendMessage(message);
+
+            // Handle Token Expiry (Hard Reset)
+            if (response.tokenExpired) {
+                logout();
+                window.location.reload();
+                return;
+            }
+
+            // Handle simple auth requirement (e.g. checkout attempt)
+            if (response.authRequired) {
+                setReturnToBasket(true);
+                setShowAuth(true);
+            }
+            if (response.orderSubmitted && showBasket) {
+                setShowBasket(false);
+            }
+        } catch (error) {
+            console.error('Chat error:', error);
         }
     };
 
@@ -557,11 +727,28 @@ export function FlipDishChat() {
                     </div>
                 )}
 
-                {visibleMessages.map((msg, idx) => (
-                    <React.Fragment key={idx}>
-                        {renderMessageContent(msg)}
-                    </React.Fragment>
-                ))}
+                {visibleMessages.map((msg, idx) => {
+                    // Suppress assistant text if the immediate next message is a menu_cards display
+                    if (msg.role === 'assistant') {
+                        const nextMsg = visibleMessages[idx + 1];
+                        if (nextMsg && nextMsg.role === 'tool') {
+                            try {
+                                const content = JSON.parse(nextMsg.content);
+                                if (content.displayType === 'menu_cards') {
+                                    return null;
+                                }
+                            } catch {
+                                // ignore
+                            }
+                        }
+                    }
+
+                    return (
+                        <React.Fragment key={idx}>
+                            {renderMessageContent(msg)}
+                        </React.Fragment>
+                    );
+                })}
 
                 {isLoading && (
                     <div className="flex gap-3 max-w-[85%] animate-pulse">

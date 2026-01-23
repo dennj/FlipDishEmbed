@@ -77,6 +77,8 @@ export interface FlipDishContextValue {
     basketTotal: number;
     refreshBasket: () => Promise<void>;
     updateBasket: (action: BasketAction) => Promise<void>;
+    menuItems: MenuItem[];
+    addMenuItems: (items: MenuItem[]) => void;
 
     // Payment
     paymentAccounts: PaymentAccount[];
@@ -181,12 +183,60 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                 const currentConfigHash = `${config.appId}:${config.storeId}`;
 
                 // Invalidate session if config changed
-                const validStoredSession = storedSessionId && storedConfigHash === currentConfigHash
+                let validStoredSession = storedSessionId && storedConfigHash === currentConfigHash
                     ? storedSessionId
                     : undefined;
 
-                // Create or restore session
-                const { chatId, basket: initialBasket, menu: initialMenu } = await flipdishApi.createSession(token || undefined, validStoredSession);
+                // Helper to clear session cookies
+                const clearSessionCookies = () => {
+                    console.warn('🔄 Clearing invalid session cookies...');
+                    setCookie('flipdish_session_id', '', -1);
+                    setCookie('flipdish_config_hash', '', -1);
+                    setCookie('flipdish_auth', '', -1);
+                    setToken(null);
+                    setPhoneNumber(null);
+                };
+
+                // Try to create/restore session, with validation
+                let sessionResult: { chatId: string; basket?: any; menu?: any };
+                try {
+                    sessionResult = await flipdishApi.createSession(token || undefined, validStoredSession);
+
+                    // Validate the session by attempting a lightweight API call
+                    if (validStoredSession) {
+                        try {
+                            await flipdishApi.getBasket(sessionResult.chatId, token || undefined);
+                            console.log('✅ Existing session validated successfully');
+                        } catch (validationError: any) {
+                            // Session is stale - clear and retry
+                            if (validationError.errorCode === 'TOKEN_EXPIRED' ||
+                                validationError.statusCode === 401 ||
+                                validationError.statusCode === 403) {
+                                console.warn('⚠️ Stored session expired, creating fresh session...');
+                                clearSessionCookies();
+                                // Retry without the stored session
+                                sessionResult = await flipdishApi.createSession(undefined, undefined);
+                            } else {
+                                throw validationError;
+                            }
+                        }
+                    }
+                } catch (sessionError: any) {
+                    // Handle createSession failure (e.g., stored chatId is completely invalid)
+                    if (validStoredSession && (
+                        sessionError.errorCode === 'TOKEN_EXPIRED' ||
+                        sessionError.statusCode === 401 ||
+                        sessionError.statusCode === 403
+                    )) {
+                        console.warn('⚠️ createSession failed with stored session, retrying fresh...');
+                        clearSessionCookies();
+                        sessionResult = await flipdishApi.createSession(undefined, undefined);
+                    } else {
+                        throw sessionError;
+                    }
+                }
+
+                const { chatId, basket: initialBasket, menu: initialMenu } = sessionResult;
                 setSessionId(chatId);
 
                 // Only store valid chatId
@@ -199,6 +249,8 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                 if (initialMenu && initialMenu.length > 0) {
                     setMenuItems(initialMenu);
                     console.log(`📋 Menu loaded: ${initialMenu.length} items`);
+                } else if (chatId) {
+                    console.warn('⚠️ Initial menu empty. Updates to items with options may fail until items are viewed in chat.');
                 }
 
                 // Get restaurant status
@@ -220,12 +272,28 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     try {
                         await flipdishApi.getCustomerContext(chatId, token);
                         console.log('✅ Customer context restored from cached token');
-                    } catch (error) {
-                        console.warn('⚠️ Failed to restore customer context:', error);
+                    } catch (error: any) {
+                        // If token is expired, clear auth
+                        if (error.errorCode === 'TOKEN_EXPIRED' || error.statusCode === 401 || error.statusCode === 403) {
+                            console.warn('⚠️ Auth token expired, clearing credentials...');
+                            clearSessionCookies();
+                        } else {
+                            console.warn('⚠️ Failed to restore customer context:', error);
+                        }
                     }
 
-                    const { accounts } = await flipdishApi.getPaymentAccounts(token);
-                    setPaymentAccounts(accounts);
+                    // Only fetch payment accounts if we still have a valid token
+                    if (token) {
+                        try {
+                            const { accounts } = await flipdishApi.getPaymentAccounts(token);
+                            setPaymentAccounts(accounts);
+                        } catch (error: any) {
+                            if (error.errorCode === 'TOKEN_EXPIRED' || error.statusCode === 401 || error.statusCode === 403) {
+                                console.warn('⚠️ Payment accounts fetch failed - token expired');
+                                clearSessionCookies();
+                            }
+                        }
+                    }
                 }
 
                 // Initialize messages with system prompt + menu context
@@ -315,6 +383,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                         optionSelections: action.optionSelections
                     }];
                 }
+                console.log('Sending updateBasket payload:', JSON.stringify(payload, null, 2));
                 await flipdishApi.updateBasket(sessionId, payload, token || undefined);
             }
             await refreshBasket();
@@ -323,6 +392,15 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
             throw error;
         }
     }, [sessionId, token, refreshBasket]);
+
+    const addMenuItems = useCallback((newItems: MenuItem[]) => {
+        setMenuItems(current => {
+            const existingIds = new Set(current.map(i => i.menuItemId));
+            const uniqueNew = newItems.filter(i => !existingIds.has(i.menuItemId));
+            if (uniqueNew.length === 0) return current;
+            return [...current, ...uniqueNew];
+        });
+    }, []);
 
     const placeOrder = useCallback(async (paymentAccountId?: number) => {
         let authToken = token;
@@ -418,6 +496,8 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         basketTotal,
         refreshBasket,
         updateBasket,
+        menuItems,
+        addMenuItems,
         paymentAccounts,
         defaultPaymentAccount,
         placeOrder,
