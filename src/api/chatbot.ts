@@ -431,7 +431,10 @@ CRITICAL RULES:
                     orderId = result?.data?.order?.orderId;
                     leadTimePrompt = result?.data?.leadTimePrompt;
                 }
-                if (functionName === 'add_to_basket' && result?.success) {
+                if (result?.basketUpdated) {
+                    basketUpdated = true;
+                }
+                if (functionName === 'add_to_basket' && result) {
                     basketUpdated = true;
                 }
             } catch (error: any) {
@@ -667,7 +670,7 @@ CRITICAL RULES:
 
             case 'clear_basket': {
                 await flipdishApi.clearBasket(chatId, token);
-                return { status: 200, message: 'Basket cleared' };
+                return { status: 200, message: 'Basket cleared', basketUpdated: true };
             }
 
             case 'submit_order': {
