@@ -24,6 +24,7 @@ export interface ChatRequest {
     messages: ChatMessage[];
     chatId: string;
     token?: string;
+    menuItems?: MenuItem[];
 }
 
 export interface ChatResponse {
@@ -36,6 +37,7 @@ export interface ChatResponse {
     orderSubmitted?: boolean;
     orderId?: string;
     leadTimePrompt?: string;
+    basketUpdated?: boolean;
 }
 
 // ============================================
@@ -299,7 +301,7 @@ CRITICAL RULES:
      * Process a chat message and execute any tool calls
      */
     async chat(request: ChatRequest): Promise<ChatResponse> {
-        const { messages, chatId, token } = request;
+        const { messages, chatId, token, menuItems } = request;
 
         console.log('\n' + '='.repeat(60));
         console.log('🤖 CHATBOT REQUEST');
@@ -308,8 +310,14 @@ CRITICAL RULES:
         const { message: basketContext, basket } = await this.loadBasketContext(chatId, token);
         const modelMessages = this.insertContextMessage(messages, basketContext);
 
-        // Track search results for validation
+        // Track search results for validation (combine history + provided context)
         let searchResults: MenuItem[] = this.extractSearchResultsFromHistory(messages);
+        if (menuItems && menuItems.length > 0) {
+            // Add any items not already in searchResults
+            const existingIds = new Set(searchResults.map(i => i.menuItemId));
+            const newItems = menuItems.filter(i => !existingIds.has(i.menuItemId));
+            searchResults = [...searchResults, ...newItems];
+        }
 
         const lastUserMessage = this.getLastUserMessage(messages);
         if (lastUserMessage && this.isCheckoutIntent(lastUserMessage)) {
@@ -388,6 +396,7 @@ CRITICAL RULES:
         let orderSubmitted = false;
         let orderId: string | undefined;
         let leadTimePrompt: string | undefined;
+        let basketUpdated = false;
 
         for (const toolCall of toolCalls) {
             if (toolCall.type !== 'function') continue;
@@ -421,6 +430,9 @@ CRITICAL RULES:
                     orderSubmitted = true;
                     orderId = result?.data?.order?.orderId;
                     leadTimePrompt = result?.data?.leadTimePrompt;
+                }
+                if (functionName === 'add_to_basket' && result?.success) {
+                    basketUpdated = true;
                 }
             } catch (error: any) {
                 result = this.handleToolError(error);
@@ -516,6 +528,7 @@ CRITICAL RULES:
             orderSubmitted,
             orderId,
             leadTimePrompt,
+            basketUpdated,
         };
     }
 
@@ -628,12 +641,17 @@ CRITICAL RULES:
                 const items = basket.basketMenuItems || [];
                 const item = items.find(i => i.menuItemId === args.menuItemId);
 
-                if (item && item.quantity <= (args.quantity || 1) && items.length === 1) {
-                    await flipdishApi.clearBasket(chatId, token);
-                    return { status: 200, message: 'Basket cleared' };
+                if (!item) {
+                    const validItems = items.map(i => `${i.name} (ID: ${i.menuItemId})`).join(', ');
+                    return { error: `Item with ID ${args.menuItemId} not found in basket. Current basket items: ${validItems || 'none'}` };
                 }
 
-                return await flipdishApi.updateBasket(
+                if (item && item.quantity <= (args.quantity || 1) && items.length === 1) {
+                    await flipdishApi.clearBasket(chatId, token);
+                    return { status: 200, message: 'Basket cleared', basketUpdated: true };
+                }
+
+                const updateResult = await flipdishApi.updateBasket(
                     chatId,
                     {
                         removeMenuItems: [{
@@ -644,6 +662,7 @@ CRITICAL RULES:
                     },
                     token
                 );
+                return { ...updateResult, basketUpdated: true };
             }
 
             case 'clear_basket': {
@@ -700,20 +719,30 @@ CRITICAL RULES:
      * Extract search results from conversation history
      */
     private extractSearchResultsFromHistory(messages: ChatMessage[]): MenuItem[] {
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
+        const itemsMap = new Map<number, MenuItem>();
+
+        for (const msg of messages) {
             if (msg.role === 'tool' && msg.content) {
                 try {
                     const parsed = JSON.parse(msg.content);
-                    if (parsed.data?.items && Array.isArray(parsed.data.items)) {
-                        return parsed.data.items;
+                    // Check for standard tool response structure
+                    // The tool response might be directly the result object or wrapped
+                    // verify_option_selection returns { status: 200, items: [...] } for show_items
+                    // search_menu returns { items: [...] }
+
+                    const data = parsed.data || parsed; // Handle potential wrapper
+
+                    if (data.items && Array.isArray(data.items)) {
+                        for (const item of data.items) {
+                            itemsMap.set(item.menuItemId, item);
+                        }
                     }
                 } catch {
                     // Not a valid JSON response
                 }
             }
         }
-        return [];
+        return Array.from(itemsMap.values());
     }
 
     private insertContextMessage(messages: ChatMessage[], context?: ChatMessage | null): ChatMessage[] {
@@ -751,7 +780,7 @@ CRITICAL RULES:
 
         const lines = items.map(item => {
             const itemTotal = item.totalPrice ?? item.unitPrice ?? 0;
-            return `- ${item.quantity} x ${item.name} (${itemTotal.toFixed(2)} EUR)`;
+            return `- ${item.quantity} x ${item.name} (ID: ${item.menuItemId}) - ${itemTotal.toFixed(2)} EUR`;
         });
 
         const summary = lines.length > 0

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 
 import {
     flipdishApi,
@@ -53,6 +53,8 @@ export interface FlipDishConfig {
     bearerToken: string;
     /** Custom server URL (optional, uses default staging) */
     serverUrl?: string;
+    /** Initial search term to run on load (optional) */
+    initialSearch?: string;
 }
 
 export interface FlipDishContextValue {
@@ -77,6 +79,8 @@ export interface FlipDishContextValue {
     basketTotal: number;
     refreshBasket: () => Promise<void>;
     updateBasket: (action: BasketAction) => Promise<void>;
+    isBasketOpen: boolean;
+    setBasketOpen: (open: boolean) => void;
     menuItems: MenuItem[];
     addMenuItems: (items: MenuItem[]) => void;
 
@@ -126,6 +130,9 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
     const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([]);
     const [selectedPaymentAccountId, setSelectedPaymentAccountId] = useState<number | null>(null);
 
+    // UI State
+    const [isBasketOpen, setBasketOpen] = useState(false);
+
     // Chat state
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -161,9 +168,12 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         }
     }, [token, phoneNumber]);
 
+    const initializingRef = useRef(false);
+
     // Initialize session
     useEffect(() => {
-        if (isInitialized) return;
+        if (isInitialized || initializingRef.current) return;
+        initializingRef.current = true;
 
         const init = async () => {
             try {
@@ -307,6 +317,73 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     content: systemPrompt + menuContext,
                 }]);
 
+                // Run initial search if configured (direct API call, no AI)
+                if (config.initialSearch) {
+                    try {
+                        const items = await flipdishApi.searchMenu(chatId, config.initialSearch, token || undefined);
+                        console.log('🔍 Initial search for', config.initialSearch, 'returned', items?.length || 0, 'items');
+                        if (items && items.length > 0) {
+                            // Cache the menu items
+                            setMenuItems(prev => {
+                                const merged = [...prev];
+                                for (const item of items) {
+                                    if (!merged.find(m => m.menuItemId === item.menuItemId)) {
+                                        merged.push(item);
+                                    }
+                                }
+                                return merged;
+                            });
+
+                            // Add a tool message with the search results (limit to 3)
+                            // We MUST add a preceding assistant message with tool_calls to satisfy OpenAI API validation
+                            const toolCallId = `call_init_${Date.now()}`;
+
+                            setMessages(prev => [
+                                ...prev,
+                                {
+                                    role: 'assistant' as const,
+                                    content: '',
+                                    tool_calls: [{
+                                        id: toolCallId,
+                                        type: 'function',
+                                        function: {
+                                            name: 'search_menu',
+                                            arguments: JSON.stringify({ query: config.initialSearch })
+                                        }
+                                    }]
+                                },
+                                {
+                                    role: 'tool' as const,
+                                    tool_call_id: toolCallId,
+                                    content: JSON.stringify({
+                                        displayType: 'menu_cards',
+                                        items: items.slice(0, 3),
+                                    }),
+                                },
+                                {
+                                    role: 'assistant' as const,
+                                    content: "Welcome! 👋 Here are some popular items to get you started. Feel free to ask me about the menu or add items to your basket!",
+                                },
+                            ]);
+                        } else {
+                            // No items found - session may be stale. Clear session and reload.
+                            console.warn('⚠️ Initial search returned 0 items - refreshing session...');
+                            document.cookie = 'flipdish_session_id=; Max-Age=0; path=/';
+                            document.cookie = 'flipdish_config_hash=; Max-Age=0; path=/';
+                            document.cookie = 'flipdish_auth=; Max-Age=0; path=/';
+                            window.location.reload();
+                            return; // Don't continue initialization
+                        }
+                    } catch (error) {
+                        console.warn('Initial search failed:', error);
+                        // Fallback welcome message
+                        setMessages(prev => [...prev, {
+                            role: 'assistant' as const,
+                            content: "Welcome! 👋 I'm here to help you browse the menu and place your order. Just ask about any dish or tell me what you're craving!",
+                        }]);
+                    }
+                }
+
                 setIsInitialized(true);
             } catch (error) {
                 console.error('Failed to initialize FlipDish:', error);
@@ -385,6 +462,11 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                 }
                 console.log('Sending updateBasket payload:', JSON.stringify(payload, null, 2));
                 await flipdishApi.updateBasket(sessionId, payload, token || undefined);
+
+                // Auto-open basket on add
+                if (action.type === 'add') {
+                    setBasketOpen(true);
+                }
             }
             await refreshBasket();
         } catch (error) {
@@ -448,10 +530,19 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
             const newMessages = [...messages, userMessage];
             setMessages(newMessages);
 
+            // Filter out initial dummy search messages from the API payload
+            // (The user sees them, but we don't send them to OpenAI to keep context clean/avoid errors)
+            const apiMessages = newMessages.filter(msg => {
+                const isDummyToolCall = msg.tool_calls?.some(tc => tc.id.startsWith('call_init_'));
+                const isDummyToolResponse = msg.tool_call_id?.startsWith('call_init_');
+                return !isDummyToolCall && !isDummyToolResponse;
+            });
+
             const response = await chatbotService.chat({
-                messages: newMessages,
+                messages: apiMessages,
                 chatId: sessionId,
                 token: token || undefined,
+                menuItems: menuItems,
             });
 
             // Update messages with response
@@ -464,6 +555,9 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
             // Refresh basket after tool calls
             if ((response.toolCalls && response.toolCalls.length > 0) || response.orderSubmitted) {
                 await refreshBasket();
+                if (response.basketUpdated) {
+                    setBasketOpen(true);
+                }
             }
 
             return response;
@@ -506,6 +600,8 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         sendMessage,
         messages,
         isLoading,
+        isBasketOpen,
+        setBasketOpen,
     };
 
     return (

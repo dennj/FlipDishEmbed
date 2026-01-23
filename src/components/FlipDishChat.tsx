@@ -487,14 +487,26 @@ export function FlipDishChat() {
         logout,
         phoneNumber,
         addMenuItems,
+        isBasketOpen,
+        setBasketOpen,
     } = useFlipDish();
 
     const [input, setInput] = useState('');
     const [showAuth, setShowAuth] = useState(false);
-    const [showBasket, setShowBasket] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
     const [returnToBasket, setReturnToBasket] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    // Auto-focus input when loading finishes
+    useEffect(() => {
+        if (!isLoading) {
+            // Small timeout to ensure DOM is ready and prevent fighting for focus
+            setTimeout(() => {
+                inputRef.current?.focus();
+            }, 100);
+        }
+    }, [isLoading]);
 
     // Auto-scroll
     useEffect(() => {
@@ -539,8 +551,8 @@ export function FlipDishChat() {
                 setReturnToBasket(true);
                 setShowAuth(true);
             }
-            if (response.orderSubmitted && showBasket) {
-                setShowBasket(false);
+            if (response.orderSubmitted && isBasketOpen) {
+                setBasketOpen(false);
             }
         } catch (error) {
             console.error('Chat error:', error);
@@ -666,7 +678,7 @@ export function FlipDishChat() {
                     <Button
                         variant="secondary"
                         size="icon"
-                        onClick={() => setShowBasket(true)}
+                        onClick={() => setBasketOpen(true)}
                         className="relative h-9 w-9 rounded-full shadow-sm"
                     >
                         <ShoppingCart className="h-4 w-4" />
@@ -703,29 +715,6 @@ export function FlipDishChat() {
 
             {/* Messages */}
             <CardContent className="flex-1 overflow-y-auto p-4 space-y-6 bg-muted/10 scroll-smooth" ref={scrollRef}>
-                {visibleMessages.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-full text-center px-6 py-10 animate-in fade-in zoom-in duration-300">
-                        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6 shadow-instagram">
-                            <MessageCircle className="w-8 h-8 text-primary" />
-                        </div>
-                        <h3 className="font-semibold text-lg mb-2">Welcome!</h3>
-                        <p className="text-sm text-muted-foreground mb-8 max-w-[260px] leading-relaxed">
-                            I can help you browse the menu, find popular items, and track your order.
-                        </p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-sm">
-                            {['🍔 Show me burgers', '🥗 Vegetarian options', '🥤 Drinks menu', '🥡 Popular items'].map((text) => (
-                                <Button
-                                    key={text}
-                                    variant="outline"
-                                    className="h-auto py-3 px-4 justify-start text-sm font-normal text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-primary/5 transition-all"
-                                    onClick={() => setInput(text)}
-                                >
-                                    {text}
-                                </Button>
-                            ))}
-                        </div>
-                    </div>
-                )}
 
                 {visibleMessages.map((msg, idx) => {
                     // Suppress assistant text if the immediate next message is a menu_cards display
@@ -775,6 +764,7 @@ export function FlipDishChat() {
                 >
                     <div className="relative flex-1">
                         <Input
+                            ref={inputRef}
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             placeholder="Type a message..."
@@ -802,15 +792,15 @@ export function FlipDishChat() {
                 onClose={() => setShowAuth(false)}
                 onSuccess={() => {
                     if (returnToBasket) {
-                        setShowBasket(true);
+                        setBasketOpen(true);
                         setReturnToBasket(false);
                     }
                 }}
             />
 
             <BasketPanel
-                isOpen={showBasket}
-                onClose={() => setShowBasket(false)}
+                isOpen={isBasketOpen}
+                onClose={() => setBasketOpen(false)}
                 onSignInNeeded={() => {
                     setReturnToBasket(true);
                     setShowAuth(true);
