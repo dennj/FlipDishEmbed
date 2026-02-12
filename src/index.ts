@@ -12,4 +12,4 @@ export { FlipDishChat } from './components/FlipDishChat';
 export { FlipDishProvider, useFlipDish } from './context/FlipDishProvider';
 
 // Types
-export type { FlipDishConfig, FlipDishContextValue } from './context/FlipDishProvider';
+export type { FlipDishConfig, FlipDishContextValue, ChatMessage, ChatResponse } from './context/FlipDishProvider';

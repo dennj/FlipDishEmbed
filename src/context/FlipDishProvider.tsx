@@ -7,11 +7,6 @@ import {
     setFlipdishConfig,
 } from '../api/flipdish-api';
 import {
-    createChatbotService,
-    ChatMessage,
-    ChatResponse
-} from '../api/chatbot';
-import {
     RestaurantStatus,
     BasketItem,
     PaymentAccount,
@@ -19,6 +14,27 @@ import {
     CustomerContext,
     MenuItem,
 } from '../api/flipdish-types';
+
+// Chat types (previously from chatbot.ts, now the server handles the AI)
+export interface ChatMessage {
+    role: 'user' | 'assistant' | 'system' | 'tool';
+    content: string;
+    tool_call_id?: string;
+    tool_calls?: any[];
+}
+
+export interface ChatResponse {
+    message: ChatMessage;
+    toolCalls?: any[];
+    chatId: string;
+    allMessages?: ChatMessage[];
+    authRequired?: boolean;
+    tokenExpired?: boolean;
+    orderSubmitted?: boolean;
+    orderId?: string;
+    leadTimePrompt?: string;
+    basketUpdated?: boolean;
+}
 
 // ============================================
 // HELPERS
@@ -43,16 +59,14 @@ function getCookie(name: string) {
 // ============================================
 
 export interface FlipDishConfig {
-    /** OpenAI API key for chat completions */
-    openaiApiKey: string;
     /** FlipDish brand/app ID */
     appId: string;
     /** FlipDish store ID */
     storeId: number;
     /** FlipDish Phone Agent API bearer token */
     bearerToken: string;
-    /** Custom server URL (optional, uses default staging) */
-    serverUrl?: string;
+    /** Server URL for the @flipdish/server API (required for chat) */
+    serverUrl: string;
     /** Initial search term to run on load (optional) */
     initialSearch?: string;
 }
@@ -137,11 +151,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [isLoading, setIsLoading] = useState(false);
 
-    // Chatbot service
-    const chatbotService = React.useMemo(
-        () => createChatbotService(config.openaiApiKey),
-        [config.openaiApiKey]
-    );
+
 
     // Load auth from cookies
     useEffect(() => {
@@ -306,16 +316,8 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
                     }
                 }
 
-                // Initialize messages with system prompt + menu context
-                const systemPrompt = chatbotService.getSystemPrompt();
-                const menuContext = initialMenu && initialMenu.length > 0
-                    ? chatbotService.formatMenuContext(initialMenu)
-                    : '';
-
-                setMessages([{
-                    role: 'system',
-                    content: systemPrompt + menuContext,
-                }]);
+                // Messages start empty — system prompt is injected server-side
+                setMessages([]);
 
                 // Run initial search if configured (direct API call, no AI)
                 if (config.initialSearch) {
@@ -393,7 +395,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         };
 
         init();
-    }, [config.appId, config.storeId, config.bearerToken, config.serverUrl, token, isInitialized, chatbotService]);
+    }, [config.appId, config.storeId, config.bearerToken, config.serverUrl, token, isInitialized]);
 
     // Auth methods
     const initiateOTP = useCallback(async (phone: string) => {
@@ -517,7 +519,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         setMessages(prev => [...prev, message]);
     }, []);
 
-    // Chat methods
+    // Chat methods — calls the server's chat endpoint instead of running OpenAI locally
     const sendMessage = useCallback(async (message: string): Promise<ChatResponse> => {
         if (!sessionId) {
             throw new Error('Session not initialized');
@@ -531,23 +533,36 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
             setMessages(newMessages);
 
             // Filter out initial dummy search messages from the API payload
-            // (The user sees them, but we don't send them to OpenAI to keep context clean/avoid errors)
             const apiMessages = newMessages.filter(msg => {
                 const isDummyToolCall = msg.tool_calls?.some(tc => tc.id.startsWith('call_init_'));
                 const isDummyToolResponse = msg.tool_call_id?.startsWith('call_init_');
                 return !isDummyToolCall && !isDummyToolResponse;
             });
 
-            const response = await chatbotService.chat({
+            // Call the server's chat action
+            const chatRequest = {
                 messages: apiMessages,
                 chatId: sessionId,
                 token: token || undefined,
                 menuItems: menuItems,
+            };
+
+            const res = await fetch(`${config.serverUrl}/api`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'chat', args: [chatRequest] }),
             });
+
+            if (!res.ok) {
+                const errorData = await res.text();
+                throw new Error(`Chat request failed: ${errorData}`);
+            }
+
+            const response: ChatResponse = await res.json();
 
             // Update messages with response
             if (response.allMessages) {
-                setMessages([messages[0], ...response.allMessages.filter(m => m.role !== 'system')]);
+                setMessages(response.allMessages.filter(m => m.role !== 'system'));
             } else {
                 setMessages([...newMessages, response.message]);
             }
@@ -564,7 +579,7 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
         } finally {
             setIsLoading(false);
         }
-    }, [sessionId, token, messages, chatbotService, refreshBasket]);
+    }, [sessionId, token, messages, config.serverUrl, menuItems, refreshBasket]);
 
     // Computed values
     const isAuthenticated = !!token;
