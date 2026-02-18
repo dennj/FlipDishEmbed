@@ -1,6 +1,6 @@
 {
     "name": "@flipdish/embed",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "FlipDish React chatbot component for food ordering",
     "main": "dist/index.js",
     "module": "dist/index.mjs",
