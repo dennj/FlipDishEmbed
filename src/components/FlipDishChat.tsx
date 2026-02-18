@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useFlipDish } from '../context/FlipDishProvider';
 import { Send, ShoppingCart, LogIn, LogOut, Loader2, X, ChevronLeft, MessageCircle, User, CreditCard, Check, Plus, Minus } from 'lucide-react';
 import { cn } from '../utils/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 
 import {
     Card,
@@ -32,6 +33,8 @@ interface AuthModalProps {
     onSuccess?: () => void;
 }
 
+const HCAPTCHA_SITE_KEY = '2c7e95e0-4170-40d2-adee-3a925b66f284';
+
 function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     const { initiateOTP, verifyOTP } = useFlipDish();
     const [phone, setPhone] = useState('');
@@ -39,6 +42,7 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     const [step, setStep] = useState<'phone' | 'code'>('phone');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const captchaRef = useRef<HCaptcha | null>(null);
 
     // Auto-verify when 4 digits are entered
     useEffect(() => {
@@ -52,12 +56,26 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     const handleSendCode = async () => {
         setLoading(true);
         setError('');
-        const result = await initiateOTP(phone);
-        setLoading(false);
-        if (result.success) {
-            setStep('code');
-        } else {
-            setError(result.error || 'Failed to send code');
+
+        try {
+            let captchaToken: string | undefined;
+
+            if (captchaRef.current) {
+                const res = await captchaRef.current.execute({ async: true });
+                captchaToken = res?.response;
+            }
+
+            const result = await initiateOTP(phone, captchaToken);
+            if (result.success) {
+                setStep('code');
+            } else {
+                setError(result.error || 'Failed to send code');
+            }
+        } catch (err: any) {
+            setError(err.message || 'Captcha verification failed');
+        } finally {
+            setLoading(false);
+            captchaRef.current?.resetCaptcha();
         }
     };
 
@@ -137,6 +155,7 @@ function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
                         </div>
                     )}
                 </CardContent>
+                <HCaptcha ref={captchaRef} sitekey={HCAPTCHA_SITE_KEY} size="invisible" />
             </Card>
         </div>
     );

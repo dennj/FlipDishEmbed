@@ -80,7 +80,7 @@ export interface FlipDishContextValue {
     isAuthenticated: boolean;
     token: string | null;
     phoneNumber: string | null;
-    initiateOTP: (phone: string) => Promise<{ success: boolean; error?: string }>;
+    initiateOTP: (phone: string, captchaToken?: string) => Promise<{ success: boolean; error?: string }>;
     verifyOTP: (phone: string, code: string) => Promise<{ success: boolean; error?: string; context?: CustomerContext }>;
     logout: () => void;
 
@@ -398,9 +398,9 @@ export function FlipDishProvider({ config, children }: FlipDishProviderProps) {
     }, [config.appId, config.storeId, config.bearerToken, config.serverUrl, token, isInitialized]);
 
     // Auth methods
-    const initiateOTP = useCallback(async (phone: string) => {
+    const initiateOTP = useCallback(async (phone: string, captchaToken?: string) => {
         try {
-            const result = await flipdishApi.sendOTP(phone);
+            const result = await flipdishApi.sendOTP(phone, captchaToken);
             return result;
         } catch (error: any) {
             return { success: false, error: error.message };

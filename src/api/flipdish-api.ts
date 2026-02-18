@@ -169,20 +169,25 @@ class FlipdishAPI {
     // AUTH METHODS
     // ----------------------------------------
 
-    async sendOTP(phoneNumber: string): Promise<OTPResponse> {
+    async sendOTP(phoneNumber: string, captchaToken?: string): Promise<OTPResponse> {
         if (this.config.serverUrl) {
-            return this.callProxy('sendOTP', [phoneNumber]);
+            return this.callProxy('sendOTP', [phoneNumber, captchaToken]);
         }
 
         const cleanedPhone = phoneNumber.replace(/[\s-]/g, '');
 
         console.log('🔐 Sending OTP to:', cleanedPhone);
 
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+        };
+        if (captchaToken) {
+            headers['h-captcha-response'] = captchaToken;
+        }
+
         const response = await fetch(`${this.config.mainApiBase}/Account/RequestPhoneLoginCodeSms`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 PhoneNumber: cleanedPhone,
             }),
